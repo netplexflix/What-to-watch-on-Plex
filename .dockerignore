@@ -1,0 +1,17 @@
+node_modules
+dist
+server/node_modules
+server/dist
+.git
+.gitignore
+*.md
+.env
+.env.*
+Dockerfile
+docker-compose.yml
+.dockerignore
+supabase
+.github
+*.log
+coverage
+.nyc_output

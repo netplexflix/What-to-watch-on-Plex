@@ -1,0 +1,193 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* What to Watch? - Cinematic Dark Theme */
+
+@layer base {
+  :root {
+    --background: 220 20% 8%;
+    --foreground: 210 40% 96%;
+
+    --card: 220 18% 12%;
+    --card-foreground: 210 40% 96%;
+
+    --popover: 220 18% 12%;
+    --popover-foreground: 210 40% 96%;
+
+    --primary: 172 66% 50%;
+    --primary-foreground: 220 20% 8%;
+
+    --secondary: 220 18% 18%;
+    --secondary-foreground: 210 40% 96%;
+
+    --muted: 220 14% 20%;
+    --muted-foreground: 215 20% 55%;
+
+    --accent: 45 93% 58%;
+    --accent-foreground: 220 20% 8%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 220 14% 20%;
+    --input: 220 14% 20%;
+    --ring: 172 66% 50%;
+
+    --radius: 0.75rem;
+
+    /* Custom tokens */
+    --gradient-hero: linear-gradient(135deg, hsl(220 20% 8%) 0%, hsl(220 25% 15%) 50%, hsl(220 20% 8%) 100%);
+    --gradient-card: linear-gradient(145deg, hsl(220 18% 14%) 0%, hsl(220 18% 10%) 100%);
+    --gradient-primary: linear-gradient(135deg, hsl(172 66% 50%) 0%, hsl(172 66% 40%) 100%);
+    --gradient-accent: linear-gradient(135deg, hsl(45 93% 58%) 0%, hsl(38 93% 50%) 100%);
+    --gradient-glass: linear-gradient(135deg, hsla(220 18% 20% / 0.6) 0%, hsla(220 18% 15% / 0.4) 100%);
+    
+    --shadow-glow: 0 0 30px hsla(172 66% 50% / 0.2);
+    --shadow-card: 0 8px 32px hsla(0 0% 0% / 0.4);
+    --shadow-elevated: 0 20px 60px hsla(0 0% 0% / 0.5);
+
+    --sidebar-background: 220 18% 10%;
+    --sidebar-foreground: 210 40% 96%;
+    --sidebar-primary: 172 66% 50%;
+    --sidebar-primary-foreground: 220 20% 8%;
+    --sidebar-accent: 220 18% 18%;
+    --sidebar-accent-foreground: 210 40% 96%;
+    --sidebar-border: 220 14% 20%;
+    --sidebar-ring: 172 66% 50%;
+  }
+
+  .dark {
+    --background: 220 20% 8%;
+    --foreground: 210 40% 96%;
+    --card: 220 18% 12%;
+    --card-foreground: 210 40% 96%;
+    --popover: 220 18% 12%;
+    --popover-foreground: 210 40% 96%;
+    --primary: 172 66% 50%;
+    --primary-foreground: 220 20% 8%;
+    --secondary: 220 18% 18%;
+    --secondary-foreground: 210 40% 96%;
+    --muted: 220 14% 20%;
+    --muted-foreground: 215 20% 55%;
+    --accent: 45 93% 58%;
+    --accent-foreground: 220 20% 8%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 220 14% 20%;
+    --input: 220 14% 20%;
+    --ring: 172 66% 50%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+@layer utilities {
+  .glass {
+    @apply bg-gradient-to-br from-secondary/60 to-secondary/40 backdrop-blur-xl;
+  }
+
+  .glass-card {
+    background: var(--gradient-glass);
+    backdrop-filter: blur(20px);
+    border: 1px solid hsla(220, 14%, 30%, 0.3);
+  }
+
+  .text-gradient {
+    @apply bg-clip-text text-transparent;
+    background-image: linear-gradient(135deg, hsl(var(--primary)) 0%, hsl(var(--accent)) 100%);
+  }
+
+  .glow-primary {
+    box-shadow: var(--shadow-glow);
+  }
+
+  .card-shadow {
+    box-shadow: var(--shadow-card);
+  }
+
+  .elevated-shadow {
+    box-shadow: var(--shadow-elevated);
+  }
+
+  .swipe-card {
+    touch-action: pan-y;
+    user-select: none;
+  }
+
+  .poster-aspect {
+    aspect-ratio: 2/3;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: hsl(var(--background));
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted));
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground));
+}
+
+/* Animation keyframes */
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-10px); }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 20px hsla(172, 66%, 50%, 0.2); }
+  50% { box-shadow: 0 0 40px hsla(172, 66%, 50%, 0.4); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes card-flip {
+  0% { transform: rotateY(0deg); }
+  100% { transform: rotateY(180deg); }
+}
+
+.animate-float {
+  animation: float 3s ease-in-out infinite;
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+.animate-shimmer {
+  background: linear-gradient(
+    90deg,
+    hsla(220, 18%, 20%, 0) 0%,
+    hsla(220, 18%, 30%, 0.5) 50%,
+    hsla(220, 18%, 20%, 0) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 2s infinite;
+}
