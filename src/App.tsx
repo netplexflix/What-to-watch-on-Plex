@@ -1,3 +1,4 @@
+// File: src/App.tsx
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -10,6 +11,7 @@ import Lobby from "./pages/Lobby";
 import Questions from "./pages/Questions";
 import Swipe from "./pages/Swipe";
 import Results from "./pages/Results";
+import TimedResults from "./pages/TimedResults";
 import Admin from "./pages/Admin";
 import NotFound from "./pages/NotFound";
 
@@ -29,6 +31,7 @@ const App = () => (
           <Route path="/questions/:code" element={<Questions />} />
           <Route path="/swipe/:code" element={<Swipe />} />
           <Route path="/results/:code" element={<Results />} />
+          <Route path="/timed-results/:code" element={<TimedResults />} />
           <Route path="/admin" element={<Admin />} />
           <Route path="*" element={<NotFound />} />
         </Routes>

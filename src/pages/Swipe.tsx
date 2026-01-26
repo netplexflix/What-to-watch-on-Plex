@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Loader2, RotateCcw } from "lucide-react";
+import { Loader2, RotateCcw, Clock } from "lucide-react";
 import { Logo } from "@/components/Logo";
 import { SwipeCard } from "@/components/SwipeCard";
 import { Button } from "@/components/ui/button";
@@ -169,6 +169,13 @@ const Swipe = () => {
   const [matchFound, setMatchFound] = useState(false);
   const [winnerItemKey, setWinnerItemKey] = useState<string | null>(null);
   
+  // Timer state for timed sessions
+  const [isTimedSession, setIsTimedSession] = useState(false);
+  const [timerEndAt, setTimerEndAt] = useState<Date | null>(null);
+  const [timeRemaining, setTimeRemaining] = useState<number>(0); // in seconds
+  const [timerProgress, setTimerProgress] = useState(100); // percentage
+  const [totalDuration, setTotalDuration] = useState<number>(0); // in seconds
+  
   const itemsLoadedRef = useRef(false);
   const sessionSeedRef = useRef<number | null>(null);
   const isInitializedRef = useRef(false);
@@ -180,6 +187,8 @@ const Swipe = () => {
   const orderModeRef = useRef<"random" | "fixed">("random");
   const baseItemOrderRef = useRef<string[]>([]);
   const isSwipingRef = useRef(false);
+  const timerIntervalRef = useRef<number | null>(null);
+  const isTimedSessionRef = useRef(false);
 
   useEffect(() => {
     currentIndexRef.current = currentIndex;
@@ -193,9 +202,61 @@ const Swipe = () => {
     participantsRef.current = participants;
   }, [participants]);
 
-  // Effect to handle navigation when match is found
   useEffect(() => {
-    if (matchFound && !hasNavigatedRef.current) {
+    isTimedSessionRef.current = isTimedSession;
+  }, [isTimedSession]);
+
+  // Timer countdown effect
+  useEffect(() => {
+    if (!isTimedSession || !timerEndAt || hasNavigatedRef.current) {
+      return;
+    }
+
+    console.log('[Swipe] Starting timer countdown, ends at:', timerEndAt.toISOString());
+
+    const updateTimer = () => {
+      const now = new Date();
+      const remaining = Math.max(0, Math.floor((timerEndAt.getTime() - now.getTime()) / 1000));
+      setTimeRemaining(remaining);
+      
+      if (totalDuration > 0) {
+        const progress = (remaining / totalDuration) * 100;
+        setTimerProgress(Math.max(0, Math.min(100, progress)));
+      }
+      
+      // Timer expired
+      if (remaining <= 0 && !hasNavigatedRef.current) {
+        console.log("[Swipe] Timer expired! Navigating to timed results");
+        hasNavigatedRef.current = true;
+        
+        // Clear the interval
+        if (timerIntervalRef.current) {
+          clearInterval(timerIntervalRef.current);
+          timerIntervalRef.current = null;
+        }
+        
+        haptics.medium();
+        navigate(`/timed-results/${code}`);
+      }
+    };
+
+    // Initial update
+    updateTimer();
+
+    // Update every second
+    timerIntervalRef.current = window.setInterval(updateTimer, 1000);
+
+    return () => {
+      if (timerIntervalRef.current) {
+        clearInterval(timerIntervalRef.current);
+        timerIntervalRef.current = null;
+      }
+    };
+  }, [isTimedSession, timerEndAt, totalDuration, code, navigate, haptics]);
+
+  // Effect to handle navigation when match is found (non-timed sessions only)
+  useEffect(() => {
+    if (matchFound && !hasNavigatedRef.current && !isTimedSessionRef.current) {
       hasNavigatedRef.current = true;
       console.log("[Swipe] Match found, navigating to results");
       navigate(`/results/${code}`);
@@ -204,8 +265,14 @@ const Swipe = () => {
 
   const navigateToResults = useCallback(() => {
     if (hasNavigatedRef.current) return;
-    setMatchFound(true);
-  }, []);
+    if (isTimedSessionRef.current) {
+      // For timed sessions, go to timed-results
+      hasNavigatedRef.current = true;
+      navigate(`/timed-results/${code}`);
+    } else {
+      setMatchFound(true);
+    }
+  }, [navigate, code]);
 
   const checkAllQuestionsCompleted = useCallback(async (sessionIdToCheck: string): Promise<{ allCompleted: boolean; participants: Participant[] }> => {
     const { data } = await sessionsApi.getParticipants(sessionIdToCheck);
@@ -494,7 +561,16 @@ const Swipe = () => {
 
       console.log(`[Swipe] Ready with ${finalItems.length} items`);
 
-      await sessionsApi.update(sid, { status: "swiping" });
+      // Update session status to swiping - this will trigger timer_end_at to be set on server
+      console.log('[Swipe] Updating session status to swiping...');
+      const { data: updateData } = await sessionsApi.update(sid, { status: "swiping" });
+      
+      // Check if server returned timer_end_at (for timed sessions)
+      if (updateData?.session?.timer_end_at && isTimedSessionRef.current) {
+        const endTime = new Date(updateData.session.timer_end_at);
+        console.log('[Swipe] Server set timer_end_at:', endTime.toISOString());
+        setTimerEndAt(endTime);
+      }
 
     } catch (error) {
       console.error("[Swipe] Error loading media:", error);
@@ -528,6 +604,29 @@ const Swipe = () => {
         sessionSeedRef.current = session.id.split('').reduce((acc: number, char: string) => acc + char.charCodeAt(0), 0) + 
           new Date(session.created_at).getTime();
 
+        // Check if this is a timed session
+        if (session.timed_duration && session.timed_duration > 0) {
+          console.log(`[Swipe] This is a timed session: ${session.timed_duration} minutes`);
+          setIsTimedSession(true);
+          isTimedSessionRef.current = true;
+          setTotalDuration(session.timed_duration * 60); // Convert minutes to seconds
+          
+          // If timer_end_at is already set (session already started), use it
+          if (session.timer_end_at) {
+            const endTime = new Date(session.timer_end_at);
+            console.log(`[Swipe] Timer already running, ends at: ${endTime.toISOString()}`);
+            setTimerEndAt(endTime);
+            
+            // Check if timer already expired
+            if (endTime.getTime() <= Date.now()) {
+              console.log('[Swipe] Timer already expired, navigating to timed results');
+              hasNavigatedRef.current = true;
+              navigate(`/timed-results/${code}`);
+              return;
+            }
+          }
+        }
+
         if (session.winner_item_key) {
           setWinnerItemKey(session.winner_item_key);
           navigateToResults();
@@ -560,6 +659,9 @@ const Swipe = () => {
 
     return () => {
       wsClient.unsubscribe();
+      if (timerIntervalRef.current) {
+        clearInterval(timerIntervalRef.current);
+      }
     };
   }, [code, navigate, checkAllQuestionsCompleted, localSession, loadMediaItems, navigateToResults]);
 
@@ -583,6 +685,9 @@ const Swipe = () => {
     const unsubVoteAdded = wsClient.on('vote_added', async () => {
       if (hasNavigatedRef.current || matchFound) return;
       
+      // For timed sessions, don't check for immediate match on every vote
+      if (isTimedSessionRef.current) return;
+      
       const sid = sessionIdRef.current;
       if (!sid) return;
       
@@ -601,7 +706,24 @@ const Swipe = () => {
     const unsubSessionUpdated = wsClient.on('session_updated', (data) => {
       console.log("[Swipe] session_updated event received:", data);
       
+      // Update timer_end_at if provided (for timed sessions)
+      if (data.timer_end_at && isTimedSessionRef.current) {
+        const endTime = new Date(data.timer_end_at);
+        console.log(`[Swipe] Timer updated via WebSocket: ends at ${endTime.toISOString()}`);
+        setTimerEndAt(endTime);
+      }
+      
       if (data.winner_item_key || data.status === 'completed') {
+        // For timed sessions, go to timed-results instead
+        if (isTimedSessionRef.current) {
+          console.log("[Swipe] Timed session completed, navigating to timed results");
+          if (!hasNavigatedRef.current) {
+            hasNavigatedRef.current = true;
+            navigate(`/timed-results/${code}`);
+          }
+          return;
+        }
+        
         console.log("[Swipe] Match detected via session_updated, navigating...");
         if (data.winner_item_key) {
           setWinnerItemKey(data.winner_item_key);
@@ -628,9 +750,12 @@ const Swipe = () => {
     };
   }, [sessionId, waitingForQuestions, matchFound, code, navigate, checkAllQuestionsCompleted, loadMediaItems, navigateToResults]);
 
-  // Periodically check for match (backup mechanism)
+  // Periodically check for match (backup mechanism) - only for non-timed sessions
   useEffect(() => {
     if (!sessionId || loading || waitingForQuestions || matchFound || hasNavigatedRef.current) return;
+    
+    // Skip periodic match check for timed sessions
+    if (isTimedSessionRef.current) return;
 
     const checkForMatch = async () => {
       try {
@@ -685,8 +810,8 @@ const Swipe = () => {
           throw new Error(error);
         }
 
-        // Server detected a match - set state to trigger navigation immediately
-        if (data?.match) {
+        // For non-timed sessions, server detected a match - set state to trigger navigation immediately
+        if (data?.match && !isTimedSessionRef.current) {
           console.log("[Swipe] Server confirmed match for item:", data.winnerItemKey || currentItem.ratingKey);
           haptics.success();
           if (data.winnerItemKey) {
@@ -716,41 +841,47 @@ const Swipe = () => {
       setCurrentIndex(nextIndex);
       isSwipingRef.current = false;
 
+      // For timed sessions, don't end when items run out - just show waiting
       if (nextIndex >= items.length) {
-        setWaitingForOthers(true);
-        
-        setTimeout(async () => {
-          if (hasNavigatedRef.current || matchFound) return;
+        if (isTimedSessionRef.current) {
+          setWaitingForOthers(true);
+          // Don't navigate - wait for timer to expire
+        } else {
+          setWaitingForOthers(true);
           
-          const sid = sessionIdRef.current;
-          if (!sid) return;
-          
-          const { data: votesData } = await sessionsApi.getVotes(sid);
-          const { data: participantsData } = await sessionsApi.getParticipants(sid);
-          
-          if (votesData?.votes && participantsData?.participants) {
-            const votesPerParticipant = new Map<string, number>();
-            votesData.votes.forEach((v: any) => {
-              votesPerParticipant.set(v.participant_id, (votesPerParticipant.get(v.participant_id) || 0) + 1);
-            });
+          setTimeout(async () => {
+            if (hasNavigatedRef.current || matchFound) return;
             
-            const allDone = participantsData.participants.every((p: any) => 
-              (votesPerParticipant.get(p.id) || 0) >= items.length
-            );
+            const sid = sessionIdRef.current;
+            if (!sid) return;
             
-            if (allDone && !hasNavigatedRef.current && !matchFound) {
-              const { data: sessionData } = await sessionsApi.getById(sid);
-              if (sessionData?.session?.winner_item_key) {
-                setWinnerItemKey(sessionData.session.winner_item_key);
-                navigateToResults();
-                return;
-              }
+            const { data: votesData } = await sessionsApi.getVotes(sid);
+            const { data: participantsData } = await sessionsApi.getParticipants(sid);
+            
+            if (votesData?.votes && participantsData?.participants) {
+              const votesPerParticipant = new Map<string, number>();
+              votesData.votes.forEach((v: any) => {
+                votesPerParticipant.set(v.participant_id, (votesPerParticipant.get(v.participant_id) || 0) + 1);
+              });
               
-              await sessionsApi.update(sid, { status: "no_match" });
-              navigateToResults();
+              const allDone = participantsData.participants.every((p: any) => 
+                (votesPerParticipant.get(p.id) || 0) >= items.length
+              );
+              
+              if (allDone && !hasNavigatedRef.current && !matchFound) {
+                const { data: sessionData } = await sessionsApi.getById(sid);
+                if (sessionData?.session?.winner_item_key) {
+                  setWinnerItemKey(sessionData.session.winner_item_key);
+                  navigateToResults();
+                  return;
+                }
+                
+                await sessionsApi.update(sid, { status: "no_match" });
+                navigateToResults();
+              }
             }
-          }
-        }, 2000);
+          }, 2000);
+        }
       }
     },
     [localSession, items, haptics, navigateToResults, matchFound]
@@ -794,6 +925,13 @@ const Swipe = () => {
       toast.error("Failed to restart session");
     }
   }, [code, navigate, haptics]);
+
+  // Format time remaining for display
+  const formatTimeRemaining = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
 
   // Show loading while match navigation is pending
   if (matchFound) {
@@ -862,10 +1000,34 @@ const Swipe = () => {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-background px-6">
         <Logo size="md" className="justify-center mb-8" />
+        
+        {/* Timer bar for timed sessions */}
+        {isTimedSession && timerEndAt && (
+          <div className="w-full max-w-md mb-6">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <Clock size={16} className="text-muted-foreground" />
+                <span className="text-sm text-muted-foreground">Time remaining</span>
+              </div>
+              <span className="text-sm font-mono text-foreground">{formatTimeRemaining(timeRemaining)}</span>
+            </div>
+            <div className="w-full h-2 bg-secondary rounded-full overflow-hidden">
+              <motion.div
+                className={`h-full transition-colors duration-500 ${
+                  timerProgress < 20 ? 'bg-destructive' : timerProgress < 50 ? 'bg-accent' : 'bg-primary'
+                }`}
+                style={{ width: `${timerProgress}%` }}
+              />
+            </div>
+          </div>
+        )}
+        
         <Loader2 className="animate-spin text-primary mb-4" size={48} />
         <h1 className="text-2xl font-bold text-foreground mb-2">All Done!</h1>
         <p className="text-muted-foreground text-center">
-          Waiting for others to finish swiping...
+          {isTimedSession 
+            ? "Waiting for the timer to end..."
+            : "Waiting for others to finish swiping..."}
         </p>
         <p className="text-sm text-muted-foreground mt-4">
           {currentIndex} of {items.length} items reviewed
@@ -884,7 +1046,7 @@ const Swipe = () => {
       </div>
 
       <div className="flex-1 flex flex-col px-4 py-6 relative z-10">
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between mb-2">
           <Logo size="sm" />
           <div className="text-right">
             <span className="text-sm text-muted-foreground">
@@ -893,6 +1055,32 @@ const Swipe = () => {
           </div>
         </div>
 
+        {/* Timer bar for timed sessions */}
+        {isTimedSession && timerEndAt && (
+          <div className="mb-2">
+            <div className="flex items-center justify-between mb-1">
+              <div className="flex items-center gap-1">
+                <Clock size={12} className="text-muted-foreground" />
+                <span className="text-xs text-muted-foreground">Time remaining</span>
+              </div>
+              <span className={`text-xs font-mono ${timeRemaining < 60 ? 'text-destructive font-bold' : 'text-foreground'}`}>
+                {formatTimeRemaining(timeRemaining)}
+              </span>
+            </div>
+            <div className="w-full h-1.5 bg-secondary rounded-full overflow-hidden">
+              <motion.div
+                className={`h-full transition-colors duration-500 ${
+                  timerProgress < 20 ? 'bg-destructive' : timerProgress < 50 ? 'bg-accent' : 'bg-primary'
+                }`}
+                initial={false}
+                animate={{ width: `${timerProgress}%` }}
+                transition={{ duration: 0.5, ease: "linear" }}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Progress bar */}
         <div className="w-full h-1 bg-secondary rounded-full mb-6 overflow-hidden">
           <motion.div
             className="h-full bg-primary"

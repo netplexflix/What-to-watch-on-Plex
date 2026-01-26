@@ -1,4 +1,4 @@
-//file: server/src/db.ts
+// file: server/src/db.ts
 import Database from 'better-sqlite3';
 import type { Database as DatabaseType } from 'better-sqlite3';
 import path from 'path';
@@ -16,6 +16,7 @@ export function initDatabase(dataPath: string): DatabaseType {
   
   db.pragma('journal_mode = WAL');
   
+  // Create base tables
   db.exec(`
     CREATE TABLE IF NOT EXISTS app_config (
       key TEXT PRIMARY KEY,
@@ -100,8 +101,62 @@ export function initDatabase(dataPath: string): DatabaseType {
     CREATE INDEX IF NOT EXISTS idx_votes_participant ON votes(participant_id);
   `);
 
+  // Run migrations for new columns/tables
+  runMigrations(db);
+
   console.log('Database initialized at:', dbPath);
   return db;
+}
+
+function runMigrations(db: DatabaseType) {
+  // Check and add timed_duration column to sessions
+  const sessionsColumns = db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[];
+  const sessionColumnNames = sessionsColumns.map(c => c.name);
+  
+  if (!sessionColumnNames.includes('timed_duration')) {
+    console.log('[DB Migration] Adding timed_duration column to sessions');
+    db.exec('ALTER TABLE sessions ADD COLUMN timed_duration INTEGER DEFAULT NULL');
+  }
+  
+  if (!sessionColumnNames.includes('timer_end_at')) {
+    console.log('[DB Migration] Adding timer_end_at column to sessions');
+    db.exec('ALTER TABLE sessions ADD COLUMN timer_end_at TEXT DEFAULT NULL');
+  }
+
+  // Create final_votes table if not exists
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS final_votes (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      participant_id TEXT NOT NULL,
+      item_key TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+      FOREIGN KEY (participant_id) REFERENCES session_participants(id) ON DELETE CASCADE,
+      UNIQUE(session_id, participant_id)
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_final_votes_session ON final_votes(session_id);
+  `);
+
+  // Create session_history table if not exists
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS session_history (
+      id TEXT PRIMARY KEY,
+      session_code TEXT NOT NULL,
+      participants TEXT NOT NULL,
+      winner_item_key TEXT,
+      winner_title TEXT,
+      winner_thumb TEXT,
+      media_type TEXT,
+      was_timed INTEGER DEFAULT 0,
+      completed_at TEXT DEFAULT (datetime('now'))
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_session_history_completed ON session_history(completed_at);
+  `);
+
+  console.log('[DB] Migrations complete');
 }
 
 export function getDb(): DatabaseType {

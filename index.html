@@ -1,21 +1,46 @@
-<!doctype html>
+<!-- File: index.html -->
+<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#2dd4bf" />
+    <meta name="description" content="Swipe together. Watch together. A Tinder-like app to help groups decide what to watch." />
+    
+    <!-- PWA -->
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="What to Watch?" />
+    
     <title>What to Watch?</title>
-    <meta name="description" content="A collaborative movie night picker - swipe to find what everyone wants to watch" />
-    <meta name="author" content="What to Watch?" />
-
-    <meta property="og:title" content="What to Watch?" />
-    <meta property="og:description" content="A collaborative movie night picker - swipe to find what everyone wants to watch" />
-    <meta property="og:type" content="website" />
-
-    <meta name="twitter:card" content="summary_large_image" />
   </head>
-
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <script>
+      // Register service worker for PWA (only in production)
+      if ('serviceWorker' in navigator && window.location.hostname !== 'localhost') {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js')
+            .then((registration) => {
+              console.log('SW registered:', registration.scope);
+            })
+            .catch((error) => {
+              console.log('SW registration failed:', error);
+            });
+        });
+      } else if ('serviceWorker' in navigator && window.location.hostname === 'localhost') {
+        // Unregister any existing service workers in development
+        navigator.serviceWorker.getRegistrations().then((registrations) => {
+          for (const registration of registrations) {
+            registration.unregister();
+            console.log('SW unregistered for development');
+          }
+        });
+      }
+    </script>
   </body>
 </html>

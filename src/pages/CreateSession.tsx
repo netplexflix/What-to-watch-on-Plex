@@ -2,15 +2,17 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { ArrowLeft, User, LogIn, Check, Loader2 } from "lucide-react";
+import { ArrowLeft, User, LogIn, Check, Loader2, Clock, Minus, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { Logo } from "@/components/Logo";
 import { MediaTypeSelector } from "@/components/MediaTypeSelector";
 import { plexApi, sessionsApi } from "@/lib/api";
 import { saveLocalSession } from "@/lib/sessionStore";
 import { toast } from "sonner";
 import { useHaptics } from "@/hooks/useHaptics";
+import { cn } from "@/lib/utils";
 
 interface PlexUser {
   username: string;
@@ -25,6 +27,8 @@ const CreateSession = () => {
   const [isCreating, setIsCreating] = useState(false);
   const [joinAsGuest, setJoinAsGuest] = useState(true);
   const [mediaType, setMediaType] = useState<"movies" | "shows" | "both">("both");
+  const [isTimedSession, setIsTimedSession] = useState(false);
+  const [timedMinutes, setTimedMinutes] = useState(5);
   
   // Plex OAuth state
   const [plexLoading, setPlexLoading] = useState(false);
@@ -119,12 +123,29 @@ const CreateSession = () => {
     haptics.medium();
     setIsCreating(true);
     try {
-      const { data, error } = await sessionsApi.create({
+      const createData: {
+        mediaType: string;
+        displayName: string;
+        isGuest: boolean;
+        plexToken?: string;
+        timedDuration?: number;
+      } = {
         mediaType,
         displayName: displayName.trim(),
         isGuest: joinAsGuest,
-        plexToken: plexToken || undefined,
-      });
+      };
+
+      // Only add plexToken if it exists
+      if (plexToken) {
+        createData.plexToken = plexToken;
+      }
+
+      // Only add timedDuration if timed session is enabled
+      if (isTimedSession) {
+        createData.timedDuration = timedMinutes;
+      }
+
+      const { data, error } = await sessionsApi.create(createData);
 
       if (error) throw new Error(error);
       if (!data) throw new Error("No data returned");
@@ -172,6 +193,16 @@ const CreateSession = () => {
     }
   };
 
+  const handleTimedToggle = (enabled: boolean) => {
+    haptics.selection();
+    setIsTimedSession(enabled);
+  };
+
+  const handleMinutesChange = (delta: number) => {
+    haptics.selection();
+    setTimedMinutes(prev => Math.max(1, Math.min(60, prev + delta)));
+  };
+
   // Determine the visual state of the Plex button
   const isPlexSelected = !joinAsGuest || plexLoading;
   const isPlexAuthenticated = !joinAsGuest && plexUser !== null;
@@ -196,24 +227,24 @@ const CreateSession = () => {
       </div>
 
       {/* Content */}
-      <div className="flex-1 flex flex-col items-center justify-center px-6 relative z-10">
+      <div className="flex-1 flex flex-col items-center px-6 relative z-10 pb-8 overflow-y-auto">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           className="w-full max-w-md"
         >
-          <div className="flex justify-center mb-8">
+          <div className="flex justify-center mb-6">
             <Logo size="md" />
           </div>
 
           <h1 className="text-2xl font-bold text-foreground text-center mb-2">
             Create a Session
           </h1>
-          <p className="text-muted-foreground text-center mb-8">
+          <p className="text-muted-foreground text-center mb-6">
             Start a watch party and invite your friends
           </p>
 
-          <div className="space-y-6">
+          <div className="space-y-5">
             {/* Name input */}
             <div className="space-y-2">
               <label className="text-sm font-medium text-foreground">
@@ -241,11 +272,12 @@ const CreateSession = () => {
               <div className="grid grid-cols-2 gap-3">
                 <button
                   onClick={handleGuestSelect}
-                  className={`relative p-4 rounded-xl transition-all duration-200 ${
+                  className={cn(
+                    "relative p-4 rounded-xl transition-all duration-200",
                     joinAsGuest && !plexLoading
                       ? "glass-card border-2 border-primary glow-primary"
                       : "glass-card border-2 border-transparent hover:border-muted-foreground/30"
-                  }`}
+                  )}
                 >
                   {joinAsGuest && !plexLoading && (
                     <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-primary flex items-center justify-center">
@@ -253,9 +285,10 @@ const CreateSession = () => {
                     </div>
                   )}
                   <User
-                    className={`mx-auto mb-2 ${
+                    className={cn(
+                      "mx-auto mb-2",
                       joinAsGuest && !plexLoading ? "text-primary" : "text-muted-foreground"
-                    }`}
+                    )}
                     size={24}
                   />
                   <p className="font-medium text-foreground">Guest</p>
@@ -264,11 +297,12 @@ const CreateSession = () => {
                 <button
                   onClick={handlePlexSelect}
                   disabled={plexLoading}
-                  className={`relative p-4 rounded-xl transition-all duration-200 ${
+                  className={cn(
+                    "relative p-4 rounded-xl transition-all duration-200",
                     isPlexSelected
                       ? "glass-card border-2 border-primary glow-primary"
                       : "glass-card border-2 border-transparent hover:border-muted-foreground/30"
-                  }`}
+                  )}
                 >
                   {isPlexAuthenticated && (
                     <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-primary flex items-center justify-center">
@@ -279,9 +313,10 @@ const CreateSession = () => {
                     <Loader2 className="mx-auto mb-2 animate-spin text-primary" size={24} />
                   ) : (
                     <LogIn
-                      className={`mx-auto mb-2 ${
+                      className={cn(
+                        "mx-auto mb-2",
                         isPlexSelected ? "text-primary" : "text-muted-foreground"
-                      }`}
+                      )}
                       size={24}
                     />
                   )}
@@ -298,13 +333,86 @@ const CreateSession = () => {
             {/* Media type selection */}
             <MediaTypeSelector value={mediaType} onChange={setMediaType} />
 
+            {/* Timed Session Toggle */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Clock size={20} className={isTimedSession ? "text-primary" : "text-muted-foreground"} />
+                  <label className="text-sm font-medium text-foreground">
+                    Timed Session
+                  </label>
+                </div>
+                <Switch
+                  checked={isTimedSession}
+                  onCheckedChange={handleTimedToggle}
+                />
+              </div>
+              
+              <p className="text-xs text-muted-foreground">
+                {isTimedSession 
+                  ? "Collect all matches and let everyone vote at the end"
+                  : "Swipe until you find a match"}
+              </p>
+
+              {/* Duration selector - only show when timed is enabled */}
+              {isTimedSession && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="glass-card rounded-xl p-4"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">Duration</span>
+                    <div className="flex items-center gap-4">
+                      <button
+                        onClick={() => handleMinutesChange(-1)}
+                        disabled={timedMinutes <= 1}
+                        className={cn(
+                          "w-10 h-10 rounded-full flex items-center justify-center transition-all",
+                          timedMinutes <= 1
+                            ? "bg-secondary text-muted-foreground cursor-not-allowed"
+                            : "bg-secondary hover:bg-secondary/80 text-foreground active:scale-95"
+                        )}
+                      >
+                        <Minus size={20} />
+                      </button>
+                      <div className="w-20 text-center">
+                        <span className="text-2xl font-bold text-foreground">{timedMinutes}</span>
+                        <span className="text-sm text-muted-foreground ml-1">min</span>
+                      </div>
+                      <button
+                        onClick={() => handleMinutesChange(1)}
+                        disabled={timedMinutes >= 60}
+                        className={cn(
+                          "w-10 h-10 rounded-full flex items-center justify-center transition-all",
+                          timedMinutes >= 60
+                            ? "bg-secondary text-muted-foreground cursor-not-allowed"
+                            : "bg-secondary hover:bg-secondary/80 text-foreground active:scale-95"
+                        )}
+                      >
+                        <Plus size={20} />
+                      </button>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </div>
+
             {/* Create button */}
             <Button
               onClick={handleCreate}
               disabled={!displayName.trim() || isCreating || plexLoading}
               className="w-full h-14 text-lg font-semibold bg-primary hover:bg-primary/90 text-primary-foreground"
             >
-              {isCreating ? "Creating..." : "Create Session"}
+              {isCreating ? (
+                <>
+                  <Loader2 className="mr-2 animate-spin" size={20} />
+                  Creating...
+                </>
+              ) : (
+                "Create Session"
+              )}
             </Button>
           </div>
         </motion.div>

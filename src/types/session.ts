@@ -3,12 +3,14 @@ export interface Session {
   id: string;
   code: string;
   host_user_id: string | null;
-  status: 'waiting' | 'questions' | 'swiping' | 'completed' | 'no_match';
+  status: 'waiting' | 'questions' | 'swiping' | 'voting' | 'completed' | 'no_match';
   created_at: string;
   updated_at: string;
   preferences: SessionPreferences;
   winner_item_key: string | null;
   media_type?: 'movies' | 'shows' | 'both';
+  timed_duration?: number | null;  // in minutes
+  timer_end_at?: string | null;    // ISO timestamp
 }
 
 // Selection state: undefined = not selected, true = preferred, false = excluded

@@ -347,4 +347,44 @@ router.get('/logo/:filename', (req, res) => {
   }
 });
 
+// Get session history
+router.get('/session-history', (req, res) => {
+  try {
+    const db = getDb();
+    const limit = parseInt(req.query.limit as string) || 50;
+    const offset = parseInt(req.query.offset as string) || 0;
+    
+    const history = db.prepare(`
+      SELECT * FROM session_history 
+      ORDER BY completed_at DESC 
+      LIMIT ? OFFSET ?
+    `).all(limit, offset) as any[];
+    
+    const total = db.prepare('SELECT COUNT(*) as count FROM session_history').get() as { count: number };
+    
+    const parsed = history.map(h => ({
+      ...h,
+      participants: JSON.parse(h.participants),
+      was_timed: !!h.was_timed,
+    }));
+    
+    res.json({ history: parsed, total: total.count });
+  } catch (error) {
+    console.error('[Admin] Error getting session history:', error);
+    res.status(500).json({ error: 'Failed to get session history' });
+  }
+});
+
+// Clear session history
+router.post('/clear-session-history', (req, res) => {
+  try {
+    const db = getDb();
+    db.prepare('DELETE FROM session_history').run();
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[Admin] Error clearing session history:', error);
+    res.status(500).json({ error: 'Failed to clear session history' });
+  }
+});
+
 export { router as adminRoutes };

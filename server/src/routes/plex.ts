@@ -373,8 +373,35 @@ router.post('/get-cache-stats', (req, res) => {
   try {
     const db = getDb();
     
-    const mediaRows = db.prepare('SELECT item_count FROM media_items_cache').all() as { item_count: number }[];
-    const totalMediaCount = mediaRows.reduce((sum, row) => sum + (row.item_count || 0), 0);
+    // Get plex config for library keys
+    const configRow = db.prepare('SELECT value FROM app_config WHERE key = ?').get('plex') as { value: string } | undefined;
+    
+    let totalMediaCount = 0;
+    
+    if (configRow) {
+      const config = JSON.parse(configRow.value);
+      const sortedLibraryKeys = [...(config.libraries || [])].sort().join(',');
+      
+      // Get the 'both' cache which contains all items (not summing individual caches)
+      const bothCache = db.prepare(
+        'SELECT item_count FROM media_items_cache WHERE library_keys = ? AND media_type = ?'
+      ).get(sortedLibraryKeys, 'both') as { item_count: number } | undefined;
+      
+      if (bothCache) {
+        totalMediaCount = bothCache.item_count || 0;
+      } else {
+        // Fallback: if no 'both' cache, sum movies and shows
+        const moviesCache = db.prepare(
+          'SELECT item_count FROM media_items_cache WHERE library_keys = ? AND media_type = ?'
+        ).get(sortedLibraryKeys, 'movies') as { item_count: number } | undefined;
+        
+        const showsCache = db.prepare(
+          'SELECT item_count FROM media_items_cache WHERE library_keys = ? AND media_type = ?'
+        ).get(sortedLibraryKeys, 'shows') as { item_count: number } | undefined;
+        
+        totalMediaCount = (moviesCache?.item_count || 0) + (showsCache?.item_count || 0);
+      }
+    }
     
     const langRow = db.prepare('SELECT languages FROM library_languages_cache LIMIT 1').get() as { languages: string } | undefined;
     let languagesCached = false;

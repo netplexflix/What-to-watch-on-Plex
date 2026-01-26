@@ -1,3 +1,4 @@
+//File: /src/test/setup.ts
 import "@testing-library/jest-dom";
 
 Object.defineProperty(window, "matchMedia", {

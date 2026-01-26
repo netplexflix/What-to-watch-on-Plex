@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { ArrowLeft, Save, Server, CheckCircle, XCircle, Loader2, Library, KeyRound, RefreshCw, Database, Settings, Clock, AlertCircle } from "lucide-react";
+import { ArrowLeft, Save, Server, CheckCircle, XCircle, Loader2, Library, KeyRound, RefreshCw, Database, Settings, Clock, AlertCircle, History } from "lucide-react";
 import { useHaptics } from "@/hooks/useHaptics";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,6 +12,7 @@ import { adminApi, plexApi, CacheRefreshProgress } from "@/lib/api";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { AdminSettingsTab } from "@/components/admin/AdminSettingsTab";
+import { SessionHistoryTab } from "@/components/admin/SessionHistoryTab";
 import { CacheProgressIndicator } from "@/components/admin/CacheProgressIndicator";
 
 interface PlexLibrary {
@@ -81,7 +82,7 @@ const Admin = () => {
   const [lastCacheRefresh, setLastCacheRefresh] = useState<LastCacheRefresh | null>(null);
   const [autoCacheRefresh, setAutoCacheRefresh] = useState(false);
   
-  const [activeTab, setActiveTab] = useState<"connection" | "settings">("connection");
+  const [activeTab, setActiveTab] = useState<"connection" | "settings" | "history">("connection");
   const [cacheProgress, setCacheProgress] = useState<CacheRefreshProgress | null>(null);
   
   const progressPollRef = useRef<number | null>(null);
@@ -459,21 +460,21 @@ const Admin = () => {
       </div>
 
       <div className="px-6 mb-4">
-        <div className="flex gap-2 p-1 bg-secondary rounded-lg">
+        <div className="flex gap-1 p-1 bg-secondary rounded-lg">
           <button
             onClick={() => {
               haptics.selection();
               setActiveTab("connection");
             }}
             className={cn(
-              "flex-1 py-2 px-4 rounded-md text-sm font-medium transition-all flex items-center justify-center gap-2",
+              "flex-1 py-2 px-3 rounded-md text-sm font-medium transition-all flex items-center justify-center gap-1",
               activeTab === "connection"
                 ? "bg-background text-foreground shadow-sm"
                 : "text-muted-foreground hover:text-foreground"
             )}
           >
-            <Server size={16} />
-            Connection
+            <Server size={14} />
+            <span className="hidden sm:inline">Connection</span>
           </button>
           <button
             onClick={() => {
@@ -481,14 +482,29 @@ const Admin = () => {
               setActiveTab("settings");
             }}
             className={cn(
-              "flex-1 py-2 px-4 rounded-md text-sm font-medium transition-all flex items-center justify-center gap-2",
+              "flex-1 py-2 px-3 rounded-md text-sm font-medium transition-all flex items-center justify-center gap-1",
               activeTab === "settings"
                 ? "bg-background text-foreground shadow-sm"
                 : "text-muted-foreground hover:text-foreground"
             )}
           >
-            <Settings size={16} />
-            Settings
+            <Settings size={14} />
+            <span className="hidden sm:inline">Settings</span>
+          </button>
+          <button
+            onClick={() => {
+              haptics.selection();
+              setActiveTab("history");
+            }}
+            className={cn(
+              "flex-1 py-2 px-3 rounded-md text-sm font-medium transition-all flex items-center justify-center gap-1",
+              activeTab === "history"
+                ? "bg-background text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            <History size={14} />
+            <span className="hidden sm:inline">History</span>
           </button>
         </div>
       </div>
@@ -500,6 +516,8 @@ const Admin = () => {
           </div>
         ) : activeTab === "settings" ? (
           <AdminSettingsTab />
+        ) : activeTab === "history" ? (
+          <SessionHistoryTab />
         ) : (
           <>
             <motion.div

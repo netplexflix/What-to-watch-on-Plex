@@ -118,6 +118,12 @@ export const adminApi = {
 
   getLogo: () =>
     fetchApiGet<{ logo: { path: string; filename: string } | null }>('/admin/get-logo'),
+
+  getSessionHistory: (limit = 50, offset = 0) =>
+    fetchApiGet<{ history: any[]; total: number }>(`/admin/session-history?limit=${limit}&offset=${offset}`),
+
+  clearSessionHistory: () =>
+    fetchApi<{ success: boolean }>('/admin/clear-session-history', { method: 'POST' }),
 };
 
 export interface CacheRefreshProgress {
@@ -216,7 +222,13 @@ export const plexApi = {
 };
 
 export const sessionsApi = {
-  create: (data: { mediaType: string; displayName: string; isGuest: boolean; plexToken?: string }) =>
+  create: (data: { 
+    mediaType: string; 
+    displayName: string; 
+    isGuest: boolean; 
+    plexToken?: string; 
+    timedDuration?: number;
+  }) =>
     fetchApi<{ session: { id: string; code: string }; participant: { id: string } }>('/sessions/create', {
       method: 'POST',
       body: JSON.stringify(data),
@@ -262,6 +274,23 @@ export const sessionsApi = {
     fetchApi<{ success: boolean }>(`/sessions/${sessionId}/votes/${participantId}/${itemKey}`, {
       method: 'DELETE',
     }),
+
+  getMatches: (sessionId: string) =>
+    fetchApi<{ matches: string[]; topLiked: { itemKey: string; likeCount: number }[] }>(`/sessions/${sessionId}/matches`),
+
+  castFinalVote: (sessionId: string, participantId: string, itemKey: string) =>
+    fetchApi<{ success: boolean; allVoted: boolean; winner?: string; wasTie?: boolean; tiedItems?: string[] }>(
+      `/sessions/${sessionId}/final-vote`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ participantId, itemKey }),
+      }
+    ),
+
+  getFinalVotes: (sessionId: string) =>
+    fetchApi<{ finalVotes: any[]; votedCount: number; totalCount: number; allVoted: boolean }>(
+      `/sessions/${sessionId}/final-votes`
+    ),
 
   getConfig: (key: string) =>
     fetchApi<{ value: any }>(`/sessions/config/${key}`),
