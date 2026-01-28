@@ -1,15 +1,19 @@
 // File: src/components/RouletteWinner.tsx
 import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
-import { Trophy } from "lucide-react";
+import { Trophy, Play } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useHaptics } from "@/hooks/useHaptics";
+import { wsClient } from "@/lib/websocket";
 import type { PlexItem } from "@/types/session";
 
 interface RouletteWinnerProps {
   items: PlexItem[];
   winnerId: string;
   onComplete: () => void;
+  isHost?: boolean;
+  sessionId?: string;  // Add sessionId prop
   className?: string;
 }
 
@@ -18,9 +22,9 @@ const ITEM_WIDTH = 100;
 const ITEM_GAP = 8;
 const VISIBLE_COUNT = 5;
 
-export const RouletteWinner = ({ items, winnerId, onComplete, className }: RouletteWinnerProps) => {
+export const RouletteWinner = ({ items, winnerId, onComplete, isHost = false, sessionId, className }: RouletteWinnerProps) => {
   const haptics = useHaptics();
-  const [phase, setPhase] = useState<'spinning' | 'winner'>('spinning');
+  const [phase, setPhase] = useState<'waiting' | 'spinning' | 'winner'>('waiting');
   const [translateX, setTranslateX] = useState(0);
   
   const rafRef = useRef<number | null>(null);
@@ -61,11 +65,9 @@ export const RouletteWinner = ({ items, winnerId, onComplete, className }: Roule
     };
   }
 
-  useEffect(() => {
-    // Prevent multiple starts
-    if (hasStartedRef.current) {
-      return;
-    }
+  // The actual animation logic - extracted so it can be called from multiple places
+  const runAnimation = () => {
+    if (hasStartedRef.current) return;
     
     // Handle single item case
     if (items.length <= 1) {
@@ -78,14 +80,14 @@ export const RouletteWinner = ({ items, winnerId, onComplete, className }: Roule
           onComplete();
         }
       }, 2000);
-      return () => clearTimeout(timer);
-    }
-
-    if (!stripData.current) {
       return;
     }
 
+    if (!stripData.current) return;
+
     hasStartedRef.current = true;
+    setPhase('spinning');
+    
     const { targetOffset } = stripData.current;
     const itemTotalWidth = ITEM_WIDTH + ITEM_GAP;
     
@@ -133,15 +135,51 @@ export const RouletteWinner = ({ items, winnerId, onComplete, className }: Roule
 
     // Start animation
     rafRef.current = requestAnimationFrame(animate);
+  };
 
+  // Host starts animation and broadcasts to others
+  const startAnimation = () => {
+    if (hasStartedRef.current) return;
+    
+    // Broadcast to other participants that roulette has started
+    if (sessionId && isHost) {
+      console.log('[Roulette] Host broadcasting roulette_started event');
+      // Send via WebSocket - we need to trigger this on the server
+      // For now, we'll use a workaround by sending a message that the server will broadcast
+      fetch(`/api/sessions/${sessionId}/broadcast-roulette`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      }).catch(err => {
+        console.error('[Roulette] Error broadcasting roulette start:', err);
+      });
+    }
+    
+    runAnimation();
+  };
+
+  // Listen for roulette_started event from WebSocket (for non-hosts)
+  useEffect(() => {
+    if (isHost) return; // Host doesn't need to listen, they trigger it
+    
+    const unsubscribe = wsClient.on('roulette_started', () => {
+      console.log('[Roulette] Received roulette_started event, starting animation');
+      runAnimation();
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [isHost]);
+
+  // Cleanup on unmount
+  useEffect(() => {
     return () => {
       if (rafRef.current) {
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
       }
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Empty deps - only run once on mount
+  }, []);
 
   // Single item case
   if (items.length <= 1) {
@@ -186,7 +224,7 @@ export const RouletteWinner = ({ items, winnerId, onComplete, className }: Roule
   return (
     <div className={cn("flex flex-col items-center justify-center p-4 w-full max-w-md mx-auto", className)}>
       <h2 className="text-lg font-bold text-foreground mb-4">
-        {phase === 'winner' ? "🎉 Winner!" : "🎰 Breaking the tie..."}
+        {phase === 'winner' ? "🎉 Winner!" : phase === 'spinning' ? "🎰 Breaking the tie..." : "🎰 It's a tie!"}
       </h2>
 
       <div className="relative" style={{ width: containerWidth }}>
@@ -285,6 +323,29 @@ export const RouletteWinner = ({ items, winnerId, onComplete, className }: Roule
           </motion.div>
         )}
       </div>
+
+      {/* Start button for host - only show in waiting phase */}
+      {phase === 'waiting' && (
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mt-6"
+        >
+          {isHost ? (
+            <Button
+              onClick={startAnimation}
+              className="bg-primary text-primary-foreground px-8"
+            >
+              <Play size={18} className="mr-2" />
+              Spin the Wheel
+            </Button>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Waiting for host to start...
+            </p>
+          )}
+        </motion.div>
+      )}
 
       {/* Winner info */}
       {phase === 'winner' && (

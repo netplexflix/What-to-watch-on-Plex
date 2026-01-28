@@ -1,7 +1,7 @@
 // File: src/components/admin/AdminSettingsTab.tsx
 import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
-import { Loader2, Save, Shuffle, ListOrdered, Eye, EyeOff, Hash, FolderOpen, Upload, Trash2, Image } from "lucide-react";
+import { Loader2, Save, Shuffle, ListOrdered, Hash, FolderOpen, Upload, Trash2, Image } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { adminApi } from "@/lib/api";
 import { toast } from "sonner";
@@ -10,7 +10,6 @@ import { useHaptics } from "@/hooks/useHaptics";
 
 interface SessionSettings {
   suggestion_order: "random" | "fixed";
-  filter_watched: boolean;
   max_choices: number;
   max_exclusions: number;
   enable_collections: boolean;
@@ -18,7 +17,6 @@ interface SessionSettings {
 
 const DEFAULT_SETTINGS: SessionSettings = {
   suggestion_order: "random",
-  filter_watched: true,
   max_choices: 3,
   max_exclusions: 3,
   enable_collections: false,
@@ -47,7 +45,6 @@ export const AdminSettingsTab = () => {
       if (data?.settings) {
         setSettings({
           suggestion_order: data.settings.suggestion_order || "random",
-          filter_watched: data.settings.filter_watched !== false,
           max_choices: data.settings.max_choices ?? 3,
           max_exclusions: data.settings.max_exclusions ?? 3,
           enable_collections: data.settings.enable_collections ?? false,
@@ -370,7 +367,7 @@ export const AdminSettingsTab = () => {
           >
             <Shuffle size={24} className={settings.suggestion_order === "random" ? "text-primary" : "text-muted-foreground"} />
             <span className="font-medium text-foreground">Random</span>
-            <span className="text-xs text-muted-foreground text-center">Different order each session</span>
+            <span className="text-xs text-muted-foreground text-center">Different for each user</span>
           </button>
           
           <button
@@ -387,56 +384,7 @@ export const AdminSettingsTab = () => {
           >
             <ListOrdered size={24} className={settings.suggestion_order === "fixed" ? "text-primary" : "text-muted-foreground"} />
             <span className="font-medium text-foreground">Fixed</span>
-            <span className="text-xs text-muted-foreground text-center">Same order for all users</span>
-          </button>
-        </div>
-      </motion.div>
-
-      {/* Filter Watched */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.3 }}
-        className="glass-card rounded-xl p-4 space-y-4"
-      >
-        <h2 className="font-semibold text-foreground">Watched Content Filter</h2>
-        <p className="text-sm text-muted-foreground">
-          Filter out content that Plex users have already watched
-        </p>
-        
-        <div className="grid grid-cols-2 gap-3">
-          <button
-            onClick={() => {
-              haptics.selection();
-              setSettings(s => ({ ...s, filter_watched: true }));
-            }}
-            className={cn(
-              "p-4 rounded-lg transition-all duration-200 flex flex-col items-center gap-2",
-              settings.filter_watched
-                ? "bg-primary/20 border-2 border-primary"
-                : "bg-secondary hover:bg-secondary/80 border-2 border-transparent"
-            )}
-          >
-            <EyeOff size={24} className={settings.filter_watched ? "text-primary" : "text-muted-foreground"} />
-            <span className="font-medium text-foreground">Filter</span>
-            <span className="text-xs text-muted-foreground text-center">Hide watched items</span>
-          </button>
-          
-          <button
-            onClick={() => {
-              haptics.selection();
-              setSettings(s => ({ ...s, filter_watched: false }));
-            }}
-            className={cn(
-              "p-4 rounded-lg transition-all duration-200 flex flex-col items-center gap-2",
-              !settings.filter_watched
-                ? "bg-primary/20 border-2 border-primary"
-                : "bg-secondary hover:bg-secondary/80 border-2 border-transparent"
-            )}
-          >
-            <Eye size={24} className={!settings.filter_watched ? "text-primary" : "text-muted-foreground"} />
-            <span className="font-medium text-foreground">Show All</span>
-            <span className="text-xs text-muted-foreground text-center">Include watched items</span>
+            <span className="text-xs text-muted-foreground text-center">Same for all users</span>
           </button>
         </div>
       </motion.div>
@@ -445,7 +393,7 @@ export const AdminSettingsTab = () => {
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.4 }}
+        transition={{ delay: 0.3 }}
         className="glass-card rounded-xl p-4 space-y-4"
       >
         <div className="flex items-center gap-2">

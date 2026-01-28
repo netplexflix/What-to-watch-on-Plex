@@ -771,8 +771,6 @@ router.post('/get-media', async (req, res) => {
     const sortedLibraryKeys = [...selectedLibraries].sort().join(',');
     
     const db = getDb();
-    const settings = getSessionSettings();
-    const filterWatched = settings.filter_watched !== false;
     
     const cacheType = mediaType === 'movies' ? 'movies' : mediaType === 'shows' ? 'shows' : 'both';
     const cached = db.prepare(
@@ -799,8 +797,8 @@ router.post('/get-media', async (req, res) => {
       console.log(`[Media] Filtered from ${beforeCount} to ${items.length} items`);
     }
     
-    // Filter watched items if user has Plex token
-    if (userPlexToken && filterWatched) {
+    // Always filter watched items if user has Plex token
+    if (userPlexToken) {
       const beforeCount = items.length;
       const watchedKeys = await getWatchedItems(config.plex_url, userPlexToken, selectedLibraries);
       items = items.filter(item => !watchedKeys.has(item.ratingKey));
@@ -918,11 +916,7 @@ router.post('/get-watched-keys', async (req, res) => {
       return res.json({ watchedKeys: [] });
     }
     
-    const settings = getSessionSettings();
-    if (settings.filter_watched === false) {
-      return res.json({ watchedKeys: [] });
-    }
-    
+    // Always filter watched content for Plex users
     const selectedLibraries = config.libraries || [];
     const watchedKeys = await getWatchedItems(config.plex_url, userPlexToken, selectedLibraries);
     

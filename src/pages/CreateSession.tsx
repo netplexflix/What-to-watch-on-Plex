@@ -2,10 +2,9 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { ArrowLeft, User, LogIn, Check, Loader2, Clock, Minus, Plus } from "lucide-react";
+import { ArrowLeft, User, LogIn, Check, Loader2, Clock, Minus, Plus, Infinity, Timer } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
 import { Logo } from "@/components/Logo";
 import { MediaTypeSelector } from "@/components/MediaTypeSelector";
 import { plexApi, sessionsApi } from "@/lib/api";
@@ -27,7 +26,7 @@ const CreateSession = () => {
   const [isCreating, setIsCreating] = useState(false);
   const [joinAsGuest, setJoinAsGuest] = useState(true);
   const [mediaType, setMediaType] = useState<"movies" | "shows" | "both">("both");
-  const [isTimedSession, setIsTimedSession] = useState(false);
+  const [sessionMode, setSessionMode] = useState<"classic" | "timed">("classic");
   const [timedMinutes, setTimedMinutes] = useState(5);
   
   // Plex OAuth state
@@ -140,8 +139,8 @@ const CreateSession = () => {
         createData.plexToken = plexToken;
       }
 
-      // Only add timedDuration if timed session is enabled
-      if (isTimedSession) {
+      // Only add timedDuration if timed session mode is selected
+      if (sessionMode === "timed") {
         createData.timedDuration = timedMinutes;
       }
 
@@ -193,9 +192,9 @@ const CreateSession = () => {
     }
   };
 
-  const handleTimedToggle = (enabled: boolean) => {
+  const handleSessionModeChange = (mode: "classic" | "timed") => {
     haptics.selection();
-    setIsTimedSession(enabled);
+    setSessionMode(mode);
   };
 
   const handleMinutesChange = (delta: number) => {
@@ -333,71 +332,109 @@ const CreateSession = () => {
             {/* Media type selection */}
             <MediaTypeSelector value={mediaType} onChange={setMediaType} />
 
-            {/* Timed Session Toggle */}
+            {/* Session Mode Selection - Classic vs Timed */}
             <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Clock size={20} className={isTimedSession ? "text-primary" : "text-muted-foreground"} />
-                  <label className="text-sm font-medium text-foreground">
-                    Timed Session
-                  </label>
-                </div>
-                <Switch
-                  checked={isTimedSession}
-                  onCheckedChange={handleTimedToggle}
-                />
-              </div>
-              
-              <p className="text-xs text-muted-foreground">
-                {isTimedSession 
-                  ? "Collect all matches and let everyone vote at the end"
-                  : "Swipe until you find a match"}
-              </p>
-
-              {/* Duration selector - only show when timed is enabled */}
-              {isTimedSession && (
-                <motion.div
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: "auto" }}
-                  exit={{ opacity: 0, height: 0 }}
-                  className="glass-card rounded-xl p-4"
+              <label className="text-sm font-medium text-foreground">
+                Session Mode
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  onClick={() => handleSessionModeChange("classic")}
+                  className={cn(
+                    "relative p-4 rounded-xl transition-all duration-200",
+                    sessionMode === "classic"
+                      ? "glass-card border-2 border-primary glow-primary"
+                      : "glass-card border-2 border-transparent hover:border-muted-foreground/30"
+                  )}
                 >
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-muted-foreground">Duration</span>
-                    <div className="flex items-center gap-4">
-                      <button
-                        onClick={() => handleMinutesChange(-1)}
-                        disabled={timedMinutes <= 1}
-                        className={cn(
-                          "w-10 h-10 rounded-full flex items-center justify-center transition-all",
-                          timedMinutes <= 1
-                            ? "bg-secondary text-muted-foreground cursor-not-allowed"
-                            : "bg-secondary hover:bg-secondary/80 text-foreground active:scale-95"
-                        )}
-                      >
-                        <Minus size={20} />
-                      </button>
-                      <div className="w-20 text-center">
-                        <span className="text-2xl font-bold text-foreground">{timedMinutes}</span>
-                        <span className="text-sm text-muted-foreground ml-1">min</span>
-                      </div>
-                      <button
-                        onClick={() => handleMinutesChange(1)}
-                        disabled={timedMinutes >= 60}
-                        className={cn(
-                          "w-10 h-10 rounded-full flex items-center justify-center transition-all",
-                          timedMinutes >= 60
-                            ? "bg-secondary text-muted-foreground cursor-not-allowed"
-                            : "bg-secondary hover:bg-secondary/80 text-foreground active:scale-95"
-                        )}
-                      >
-                        <Plus size={20} />
-                      </button>
+                  {sessionMode === "classic" && (
+                    <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-primary flex items-center justify-center">
+                      <Check size={12} className="text-primary-foreground" />
                     </div>
-                  </div>
-                </motion.div>
-              )}
+                  )}
+                  <Infinity
+                    className={cn(
+                      "mx-auto mb-2",
+                      sessionMode === "classic" ? "text-primary" : "text-muted-foreground"
+                    )}
+                    size={24}
+                  />
+                  <p className="font-medium text-foreground">Classic</p>
+                  <p className="text-xs text-muted-foreground text-center">Swipe until you find a match</p>
+                </button>
+                <button
+                  onClick={() => handleSessionModeChange("timed")}
+                  className={cn(
+                    "relative p-4 rounded-xl transition-all duration-200",
+                    sessionMode === "timed"
+                      ? "glass-card border-2 border-primary glow-primary"
+                      : "glass-card border-2 border-transparent hover:border-muted-foreground/30"
+                  )}
+                >
+                  {sessionMode === "timed" && (
+                    <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-primary flex items-center justify-center">
+                      <Check size={12} className="text-primary-foreground" />
+                    </div>
+                  )}
+                  <Timer
+                    className={cn(
+                      "mx-auto mb-2",
+                      sessionMode === "timed" ? "text-primary" : "text-muted-foreground"
+                    )}
+                    size={24}
+                  />
+                  <p className="font-medium text-foreground">Timed</p>
+                  <p className="text-xs text-muted-foreground text-center">Collect all matches and vote</p>
+                </button>
+              </div>
             </div>
+
+            {/* Duration selector - only show when timed mode is selected */}
+            {sessionMode === "timed" && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                className="glass-card rounded-xl p-4"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Clock size={18} className="text-muted-foreground" />
+                    <span className="text-sm text-muted-foreground">Duration</span>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <button
+                      onClick={() => handleMinutesChange(-1)}
+                      disabled={timedMinutes <= 1}
+                      className={cn(
+                        "w-10 h-10 rounded-full flex items-center justify-center transition-all",
+                        timedMinutes <= 1
+                          ? "bg-secondary text-muted-foreground cursor-not-allowed"
+                          : "bg-secondary hover:bg-secondary/80 text-foreground active:scale-95"
+                      )}
+                    >
+                      <Minus size={20} />
+                    </button>
+                    <div className="w-20 text-center">
+                      <span className="text-2xl font-bold text-foreground">{timedMinutes}</span>
+                      <span className="text-sm text-muted-foreground ml-1">min</span>
+                    </div>
+                    <button
+                      onClick={() => handleMinutesChange(1)}
+                      disabled={timedMinutes >= 60}
+                      className={cn(
+                        "w-10 h-10 rounded-full flex items-center justify-center transition-all",
+                        timedMinutes >= 60
+                          ? "bg-secondary text-muted-foreground cursor-not-allowed"
+                          : "bg-secondary hover:bg-secondary/80 text-foreground active:scale-95"
+                      )}
+                    >
+                      <Plus size={20} />
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            )}
 
             {/* Create button */}
             <Button

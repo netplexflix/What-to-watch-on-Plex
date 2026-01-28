@@ -100,7 +100,7 @@ export const MatchCelebration = ({
           It's a Match!
         </h1>
         <p className="text-muted-foreground mb-8">
-          Everyone agreed on this one <PartyPopper className="inline w-5 h-5" />
+          We have a winner! <PartyPopper className="inline w-5 h-5" />
         </p>
 
         {/* Matched item card - full poster */}

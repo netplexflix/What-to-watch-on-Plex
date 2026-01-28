@@ -1,17 +1,18 @@
 version: '3.8'
 
 services:
-  wtw:
+  wtwp:
     image: netplexflix/wtwp:latest
     container_name: wtwp
     restart: unless-stopped
     ports:
       - "3000:3000" #change port by using "xxxx:3000"
     volumes:
-      - ${WTW_DATA_PATH:-./data}:/app/data
+      - ./data:/app/data
     environment:
       - NODE_ENV=production
       - DATA_PATH=/app/data
+      - TZ=Europe/Amsterdam  # Change to your timezone
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
       interval: 30s

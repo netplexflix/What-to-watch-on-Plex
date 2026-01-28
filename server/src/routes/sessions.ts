@@ -800,4 +800,21 @@ router.get('/cache/media', (req, res) => {
   }
 });
 
+// Broadcast roulette started event
+router.post('/:id/broadcast-roulette', (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    console.log(`[Sessions] Broadcasting roulette_started for session ${id}`);
+    
+    // Broadcast to all participants in the session
+    broadcastToSession(id, 'roulette_started', {});
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[Sessions] Error broadcasting roulette start:', error);
+    res.status(500).json({ error: 'Failed to broadcast roulette start' });
+  }
+});
+
 export { router as sessionRoutes };
