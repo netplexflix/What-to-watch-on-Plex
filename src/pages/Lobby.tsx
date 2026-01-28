@@ -249,7 +249,12 @@ const Lobby = () => {
           </p>
 
           {/* Session Code */}
-          <SessionCodeDisplay code={code || ""} onCopy={handleCopyCode} copied={copied} />
+          <SessionCodeDisplay 
+            code={code || ""} 
+            onCopy={handleCopyCode} 
+            copied={copied} 
+            className="my-8"
+          />
 
           {/* Copy Link Button */}
           <Button

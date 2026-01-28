@@ -3,11 +3,13 @@ import { cn } from "@/lib/utils";
 interface SessionCodeDisplayProps {
   code: string;
   className?: string;
+  onCopy?: () => void;
+  copied?: boolean;
 }
 
-export const SessionCodeDisplay = ({ code, className }: SessionCodeDisplayProps) => {
+export const SessionCodeDisplay = ({ code, className, onCopy, copied }: SessionCodeDisplayProps) => {
   return (
-    <div className={cn("flex gap-2", className)}>
+    <div className={cn("flex justify-center gap-2", className)}>
       {code.split("").map((char, i) => (
         <div
           key={i}

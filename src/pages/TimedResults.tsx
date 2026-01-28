@@ -15,7 +15,6 @@ import { useHaptics } from "@/hooks/useHaptics";
 import { cn } from "@/lib/utils";
 import type { PlexItem } from "@/types/session";
 
-// Helper to transform raw item to PlexItem
 const transformToPlexItem = (item: any): PlexItem => ({
   ratingKey: item.ratingKey,
   title: item.title,
@@ -63,7 +62,6 @@ const TimedResults = () => {
   const initStartedRef = useRef(false);
   const isVotingRef = useRef(false);
 
-  // Keep refs in sync
   useEffect(() => {
     matchesRef.current = matches;
   }, [matches]);
@@ -72,7 +70,6 @@ const TimedResults = () => {
     topLikedRef.current = topLiked;
   }, [topLiked]);
 
-  // Find item by key from all available sources
   const findItemByKey = useCallback((key: string): PlexItem | null => {
     const fromMatches = matchesRef.current.find(m => m.ratingKey === key);
     if (fromMatches) return fromMatches;
@@ -86,14 +83,11 @@ const TimedResults = () => {
     return null;
   }, []);
 
-  // Handle voting complete result
   const handleVotingResult = useCallback((data: { winner: string; wasTie: boolean; tiedItems?: string[] }) => {
     if (hasHandledResultRef.current) {
-      console.log('[TimedResults] Already handled result, skipping');
       return;
     }
     
-    console.log('[TimedResults] Handling voting result:', data);
     hasHandledResultRef.current = true;
     
     if (data.wasTie && data.tiedItems && data.tiedItems.length > 1) {
@@ -102,36 +96,26 @@ const TimedResults = () => {
         .filter((item): item is PlexItem => item !== null);
       
       if (tiedPlexItems.length > 1) {
-        console.log('[TimedResults] Starting roulette with', tiedPlexItems.length, 'items:', tiedPlexItems.map(i => i.title));
         setRouletteItems(tiedPlexItems);
         setRouletteWinner(data.winner);
         setPageState('roulette');
         return;
-      } else {
-        console.log('[TimedResults] Not enough items for roulette, showing direct winner');
       }
     }
     
     const winner = findItemByKey(data.winner);
     if (winner) {
-      console.log('[TimedResults] Direct winner:', winner.title);
       setFinalWinner(winner);
       setPageState('winner');
     } else {
-      console.error('[TimedResults] Could not find winner item:', data.winner);
       hasHandledResultRef.current = false;
     }
   }, [findItemByKey]);
 
-  // Initialize page
   useEffect(() => {
-    if (initStartedRef.current) {
-      console.log('[TimedResults] Init already started, skipping');
-      return;
-    }
+    if (initStartedRef.current) return;
     
     if (!code) {
-      console.log('[TimedResults] No code provided');
       navigate("/");
       return;
     }
@@ -140,151 +124,99 @@ const TimedResults = () => {
     setLocalSession(currentLocalSession);
     
     if (!currentLocalSession) {
-      console.log('[TimedResults] No local session found');
       toast.error("Session expired. Please rejoin.");
       navigate("/");
       return;
     }
 
     initStartedRef.current = true;
-    console.log('[TimedResults] Starting initialization...', { code, participantId: currentLocalSession.participantId });
     
     const init = async () => {
       try {
-        // Step 1: Fetch session
-        console.log('[TimedResults] Step 1: Fetching session...');
         const sessionResult = await sessionsApi.getByCode(code);
-        console.log('[TimedResults] Session result:', sessionResult);
         
-        // Check for errors
         if (sessionResult.error) {
-          console.error('[TimedResults] Session fetch error:', sessionResult.error);
           throw new Error(`Session error: ${sessionResult.error}`);
         }
         
-        if (!sessionResult.data) {
-          console.error('[TimedResults] No data in session result');
-          throw new Error('No data returned from session fetch');
-        }
-        
-        if (!sessionResult.data.session) {
-          console.error('[TimedResults] No session in data:', sessionResult.data);
+        if (!sessionResult.data?.session) {
           throw new Error('Session not found');
         }
 
         const session = sessionResult.data.session;
-        console.log('[TimedResults] Session loaded:', { 
-          id: session.id, 
-          status: session.status, 
-          winner: session.winner_item_key,
-          mediaType: session.media_type 
-        });
-        
         setSessionId(session.id);
         const userIsHost = currentLocalSession.isHost || session.host_user_id === currentLocalSession.participantId;
         setIsHost(userIsHost);
-        console.log('[TimedResults] User is host:', userIsHost);
 
-        // Step 2: Fetch cached media
-        console.log('[TimedResults] Step 2: Fetching cached media...');
         let mediaItems: any[] = [];
         try {
           const mediaResult = await sessionsApi.getCachedMedia(session.media_type || 'both');
-          console.log('[TimedResults] Media result:', { 
-            error: mediaResult.error, 
-            itemCount: mediaResult.data?.items?.length 
-          });
-          
           if (mediaResult.data?.items) {
             mediaItems = mediaResult.data.items;
             mediaItems.forEach((item: any) => {
               mediaMapRef.current.set(item.ratingKey, item);
             });
-            console.log('[TimedResults] Media map populated with', mediaMapRef.current.size, 'items');
           }
         } catch (mediaError) {
           console.error('[TimedResults] Error fetching media:', mediaError);
-          // Continue without media - we might still be able to show results
         }
 
-        // Step 3: Check if session already has a winner
         if (session.winner_item_key && session.status === 'completed') {
-          console.log('[TimedResults] Session already completed with winner:', session.winner_item_key);
           const winner = mediaMapRef.current.get(session.winner_item_key);
           if (winner) {
-            console.log('[TimedResults] Found winner in media map, showing winner');
             hasHandledResultRef.current = true;
             setFinalWinner(transformToPlexItem(winner));
             setPageState('winner');
             return;
-          } else {
-            console.warn('[TimedResults] Winner not found in media map, continuing to fetch matches');
           }
         }
 
-        // Step 4: Connect WebSocket (non-blocking)
-        console.log('[TimedResults] Step 4: Connecting WebSocket...');
         try {
           await wsClient.connect();
           await wsClient.subscribe(session.id, currentLocalSession.participantId);
-          console.log('[TimedResults] WebSocket connected and subscribed');
         } catch (wsError) {
-          console.warn('[TimedResults] WebSocket connection failed, continuing without realtime updates:', wsError);
+          console.warn('[TimedResults] WebSocket connection failed:', wsError);
         }
 
-        // Step 5: Fetch matches
-        console.log('[TimedResults] Step 5: Fetching matches...');
         let loadedMatches: PlexItem[] = [];
         let loadedTopLiked: { item: PlexItem; likeCount: number }[] = [];
         
         try {
           const matchesResult = await sessionsApi.getMatches(session.id);
-          console.log('[TimedResults] Matches result:', matchesResult);
 
           if (matchesResult.data?.matches && matchesResult.data.matches.length > 0) {
-            console.log('[TimedResults] Processing', matchesResult.data.matches.length, 'matches');
             for (const key of matchesResult.data.matches) {
               const item = mediaMapRef.current.get(key);
               if (item) {
                 loadedMatches.push(transformToPlexItem(item));
-              } else {
-                console.warn('[TimedResults] Match item not found in media map:', key);
               }
             }
             setMatches(loadedMatches);
             matchesRef.current = loadedMatches;
-            console.log('[TimedResults] Loaded', loadedMatches.length, 'match items');
           }
 
           if (matchesResult.data?.topLiked && matchesResult.data.topLiked.length > 0) {
-            console.log('[TimedResults] Processing', matchesResult.data.topLiked.length, 'top liked items');
             for (const { itemKey, likeCount } of matchesResult.data.topLiked) {
               const item = mediaMapRef.current.get(itemKey);
               if (item) {
                 loadedTopLiked.push({ item: transformToPlexItem(item), likeCount });
-              } else {
-                console.warn('[TimedResults] Top liked item not found in media map:', itemKey);
               }
             }
             setTopLiked(loadedTopLiked);
             topLikedRef.current = loadedTopLiked;
-            console.log('[TimedResults] Loaded', loadedTopLiked.length, 'top liked items');
           }
         } catch (matchesError) {
           console.error('[TimedResults] Error fetching matches:', matchesError);
         }
 
-        // EDGE CASE: If there's exactly one match, it's automatically the winner
         if (loadedMatches.length === 1 && !hasHandledResultRef.current) {
-          console.log('[TimedResults] Single match found - declaring immediate winner:', loadedMatches[0].title);
           hasHandledResultRef.current = true;
           
-          // Update session with winner (fire and forget)
           sessionsApi.update(session.id, { 
             winner_item_key: loadedMatches[0].ratingKey,
             status: 'completed'
           }).catch(err => {
-            console.error('[TimedResults] Error updating session with single match winner:', err);
+            console.error('[TimedResults] Error updating session:', err);
           });
           
           setFinalWinner(loadedMatches[0]);
@@ -293,13 +225,10 @@ const TimedResults = () => {
           return;
         }
 
-        // Step 6: Check voting status
-        console.log('[TimedResults] Step 6: Checking voting status...');
         let userHasVoted = false;
         
         try {
           const votesResult = await sessionsApi.getFinalVotes(session.id);
-          console.log('[TimedResults] Votes result:', votesResult);
 
           if (votesResult.data) {
             setVotingStatus({ 
@@ -313,16 +242,13 @@ const TimedResults = () => {
               );
               
               if (myVote) {
-                console.log('[TimedResults] User already voted for:', myVote.item_key);
                 userHasVoted = true;
                 setHasVoted(true);
                 setSelectedItem(myVote.item_key);
               }
             }
             
-            // Check if all voted and we have a result
             if (votesResult.data.allVoted && !hasHandledResultRef.current) {
-              console.log('[TimedResults] All users have voted, fetching final result...');
               try {
                 const updatedSessionResult = await sessionsApi.getById(session.id);
                 if (updatedSessionResult.data?.session?.winner_item_key) {
@@ -343,19 +269,8 @@ const TimedResults = () => {
           console.error('[TimedResults] Error fetching votes:', votesError);
         }
 
-        // Final state determination
         if (!hasHandledResultRef.current) {
-          const itemsToShow = loadedMatches.length > 0 ? loadedMatches : loadedTopLiked.map(t => t.item);
-          
-          console.log('[TimedResults] Final state determination:', {
-            matchesCount: loadedMatches.length,
-            topLikedCount: loadedTopLiked.length,
-            itemsToShowCount: itemsToShow.length,
-            userHasVoted
-          });
-          
           const finalState = userHasVoted ? 'waiting' : 'voting';
-          console.log('[TimedResults] Setting page state to:', finalState);
           setPageState(finalState);
         }
         
@@ -370,14 +285,10 @@ const TimedResults = () => {
     init();
   }, [code, navigate, haptics]);
 
-  // WebSocket listeners
   useEffect(() => {
     if (!sessionId || !localSession) return;
 
-    console.log('[TimedResults] Setting up WebSocket listeners for session:', sessionId);
-
-    const unsubFinalVote = wsClient.on('final_vote_cast', async (data) => {
-      console.log('[TimedResults] final_vote_cast event:', data);
+    const unsubFinalVote = wsClient.on('final_vote_cast', async () => {
       try {
         const { data: votesData } = await sessionsApi.getFinalVotes(sessionId);
         if (votesData) {
@@ -389,12 +300,10 @@ const TimedResults = () => {
     });
 
     const unsubVotingComplete = wsClient.on('voting_complete', (data) => {
-      console.log('[TimedResults] voting_complete event:', data);
       handleVotingResult(data);
     });
 
     const unsubSessionUpdated = wsClient.on('session_updated', (data) => {
-      console.log('[TimedResults] session_updated event:', data);
       if (data.winner_item_key && data.status === 'completed' && !hasHandledResultRef.current) {
         const winner = findItemByKey(data.winner_item_key);
         if (winner) {
@@ -406,7 +315,6 @@ const TimedResults = () => {
     });
 
     return () => {
-      console.log('[TimedResults] Cleaning up WebSocket listeners');
       unsubFinalVote();
       unsubVotingComplete();
       unsubSessionUpdated();
@@ -429,7 +337,6 @@ const TimedResults = () => {
     setPageState('waiting');
     
     try {
-      console.log('[TimedResults] Casting vote for:', selectedItem);
       const { data, error } = await sessionsApi.castFinalVote(
         sessionId,
         localSession.participantId,
@@ -438,12 +345,10 @@ const TimedResults = () => {
 
       if (error) throw new Error(error);
 
-      console.log('[TimedResults] Vote cast response:', data);
       haptics.success();
       toast.success("Vote cast!");
 
       if (data?.allVoted && data.winner && !hasHandledResultRef.current) {
-        console.log('[TimedResults] Handling result from vote response');
         handleVotingResult({
           winner: data.winner,
           wasTie: data.wasTie || false,
@@ -462,7 +367,6 @@ const TimedResults = () => {
   };
 
   const handleRouletteComplete = useCallback(() => {
-    console.log('[TimedResults] Roulette complete, winner:', rouletteWinner);
     const winner = rouletteItems.find(item => item.ratingKey === rouletteWinner);
     if (winner) {
       setFinalWinner(winner);
@@ -476,32 +380,6 @@ const TimedResults = () => {
     navigate("/");
   };
 
-  const handlePlayAgain = async () => {
-    if (!sessionId) return;
-    
-    haptics.medium();
-    
-    try {
-      await sessionsApi.update(sessionId, { 
-        status: "questions",
-        winner_item_key: null,
-      });
-      
-      const { data: participantsData } = await sessionsApi.getParticipants(sessionId);
-      if (participantsData?.participants) {
-        for (const p of participantsData.participants) {
-          await sessionsApi.updateParticipant(p.id, { questions_completed: false });
-        }
-      }
-      
-      navigate(`/questions/${code}`);
-    } catch (error) {
-      console.error("[TimedResults] Error restarting session:", error);
-      haptics.error();
-      toast.error("Failed to restart session");
-    }
-  };
-
   const handleRetry = () => {
     initStartedRef.current = false;
     hasHandledResultRef.current = false;
@@ -510,7 +388,6 @@ const TimedResults = () => {
     window.location.reload();
   };
 
-  // Loading state
   if (pageState === 'loading') {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
@@ -522,7 +399,6 @@ const TimedResults = () => {
     );
   }
 
-  // Error state
   if (pageState === 'error') {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-background px-6">
@@ -549,7 +425,6 @@ const TimedResults = () => {
     );
   }
 
-  // Roulette state - pass isHost prop
   if (pageState === 'roulette' && rouletteItems.length > 0 && rouletteWinner) {
     return (
       <div className="min-h-screen flex flex-col bg-background">
@@ -570,34 +445,28 @@ const TimedResults = () => {
     );
   }
 
-  // Winner state
   if (pageState === 'winner' && finalWinner) {
     return (
       <div className="min-h-screen flex flex-col relative overflow-hidden">
         <div className="fixed inset-0 bg-background">
           <div className="absolute inset-0 bg-gradient-to-br from-primary/5 via-transparent to-accent/5" />
         </div>
-        <div className="flex-1 relative z-10">
-          <MatchCelebration 
-            item={finalWinner} 
-            onPlayAgain={isHost ? handlePlayAgain : undefined}
-          />
-          <div className="px-6 pb-8">
+        <div className="flex-1 flex flex-col items-center justify-center px-6 py-8 relative z-10">
+          <MatchCelebration item={finalWinner}>
             <Button
               onClick={handleNewSession}
               variant="outline"
-              className="w-full max-w-md mx-auto h-12 flex"
+              className="w-full h-12 text-base font-semibold border-secondary text-foreground hover:bg-secondary"
             >
               <Home size={18} className="mr-2" />
               New Session
             </Button>
-          </div>
+          </MatchCelebration>
         </div>
       </div>
     );
   }
 
-  // Voting / Waiting state
   const itemsToShow = matches.length > 0 ? matches : topLiked.map(t => t.item);
   const isMatchMode = matches.length > 0;
 

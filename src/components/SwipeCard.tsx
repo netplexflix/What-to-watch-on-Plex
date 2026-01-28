@@ -218,7 +218,7 @@ export const SwipeCard = ({ item, onSwipe, onUndo, className }: SwipeCardProps) 
               className="absolute inset-0 rounded-2xl overflow-hidden shadow-2xl bg-card [transform:rotateY(180deg)]"
               style={{ backfaceVisibility: "hidden" }}
             >
-              <div className="h-full overflow-y-auto p-5 space-y-4">
+              <div className="h-full overflow-y-auto p-5 space-y-3 scrollbar-thin">
                 <div>
                   <h3 className="text-xl font-bold text-foreground">{item.title}</h3>
                   <div className="flex flex-wrap gap-2 mt-2">
@@ -257,7 +257,10 @@ export const SwipeCard = ({ item, onSwipe, onUndo, className }: SwipeCardProps) 
                 </div>
 
                 <div>
-                  <p className="text-sm text-muted-foreground leading-relaxed line-clamp-6">
+                  <p className="text-xs text-muted-foreground uppercase tracking-wide mb-1">
+                    Summary
+                  </p>
+                  <p className="text-sm text-muted-foreground leading-relaxed">
                     {item.summary || "No summary available."}
                   </p>
                 </div>
