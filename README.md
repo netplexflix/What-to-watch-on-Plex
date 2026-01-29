@@ -55,7 +55,7 @@ docker compose up -d
 1. Access the app at `http://localhost:3000`. (or whichever port you mapped)
 2. Open the Admin Panel and set your Admin password.
 3. Enter your Plex `http://IP:PORT` and [Plex Token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/)
-4. Select your libraries and build a cache.
+4. Select your libraries ==> click on `Save Settings` ==> click on `Refresh Cache` and wait for the cache to be completed.
 
 ### Optional Settings
 

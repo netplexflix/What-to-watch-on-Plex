@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 import { AdminSettingsTab } from "@/components/admin/AdminSettingsTab";
 import { SessionHistoryTab } from "@/components/admin/SessionHistoryTab";
 import { CacheProgressIndicator } from "@/components/admin/CacheProgressIndicator";
+import { hashPassword } from "@/lib/crypto";
 
 interface PlexLibrary {
   key: string;
@@ -31,13 +32,14 @@ interface LastCacheRefresh {
   success?: boolean;
 }
 
-const hashPassword = async (password: string): Promise<string> => {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(password);
-  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
-};
+// replaced with /lib/crypto (devtest)
+//const hashPassword = async (password: string): Promise<string> => {
+//  const encoder = new TextEncoder();
+//  const data = encoder.encode(password);
+//  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+//  const hashArray = Array.from(new Uint8Array(hashBuffer));
+//  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+//};
 
 const formatRelativeTime = (timestamp: string): string => {
   const date = new Date(timestamp);
