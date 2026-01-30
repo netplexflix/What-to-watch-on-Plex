@@ -168,6 +168,7 @@ const Swipe = () => {
   const [waitingForOthers, setWaitingForOthers] = useState(false);
   const [matchFound, setMatchFound] = useState(false);
   const [winnerItemKey, setWinnerItemKey] = useState<string | null>(null);
+  const [sessionMediaType, setSessionMediaType] = useState<'movies' | 'shows' | 'both'>('both');
   
   // Timer state for timed sessions
   const [isTimedSession, setIsTimedSession] = useState(false);
@@ -600,6 +601,7 @@ const Swipe = () => {
         setSessionId(session.id);
         sessionIdRef.current = session.id;
         mediaTypeRef.current = session.media_type;
+        setSessionMediaType(session.media_type || 'both');
         
         sessionSeedRef.current = session.id.split('').reduce((acc: number, char: string) => acc + char.charCodeAt(0), 0) + 
           new Date(session.created_at).getTime();
@@ -1097,6 +1099,7 @@ const Swipe = () => {
               item={currentItem}
               onSwipe={handleSwipe}
               onUndo={swipeHistory.length > 0 ? handleUndo : undefined}
+              sessionMediaType={sessionMediaType}
             />
           )}
         </div>

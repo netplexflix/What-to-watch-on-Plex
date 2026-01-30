@@ -7,7 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Logo } from "@/components/Logo";
 import { RouletteWinner } from "@/components/RouletteWinner";
 import { MatchCelebration } from "@/components/MatchCelebration";
-import { sessionsApi } from "@/lib/api";
+import { PlaybackControl } from "@/components/PlaybackControl";
+import { sessionsApi, adminApi } from "@/lib/api";
 import { wsClient } from "@/lib/websocket";
 import { getLocalSession, clearLocalSession } from "@/lib/sessionStore";
 import { toast } from "sonner";
@@ -54,6 +55,7 @@ const TimedResults = () => {
   const [finalWinner, setFinalWinner] = useState<PlexItem | null>(null);
   const [isHost, setIsHost] = useState(false);
   const [localSession, setLocalSession] = useState(() => getLocalSession());
+  const [enablePlexButton, setEnablePlexButton] = useState(false);
   
   const mediaMapRef = useRef<Map<string, any>>(new Map());
   const hasHandledResultRef = useRef(false);
@@ -133,6 +135,16 @@ const TimedResults = () => {
     
     const init = async () => {
       try {
+        // Load settings
+        try {
+          const { data: settingsData } = await adminApi.getSessionSettings();
+          if (settingsData?.settings?.enable_plex_button) {
+            setEnablePlexButton(true);
+          }
+        } catch (e) {
+          console.error('[TimedResults] Error loading settings:', e);
+        }
+
         const sessionResult = await sessionsApi.getByCode(code);
         
         if (sessionResult.error) {
@@ -453,14 +465,22 @@ const TimedResults = () => {
         </div>
         <div className="flex-1 flex flex-col items-center justify-center px-6 py-8 relative z-10">
           <MatchCelebration item={finalWinner}>
-            <Button
-              onClick={handleNewSession}
-              variant="outline"
-              className="w-full h-12 text-base font-semibold border-secondary text-foreground hover:bg-secondary"
-            >
-              <Home size={18} className="mr-2" />
-              New Session
-            </Button>
+            <div className="flex flex-col gap-3 w-full">
+              {enablePlexButton && (
+                <PlaybackControl
+                  ratingKey={finalWinner.ratingKey}
+                  title={finalWinner.title}
+                />
+              )}
+              <Button
+                onClick={handleNewSession}
+                variant="outline"
+                className="w-full h-12 text-base font-semibold border-secondary text-foreground hover:bg-secondary"
+              >
+                <Home size={18} className="mr-2" />
+                New Session
+              </Button>
+            </div>
           </MatchCelebration>
         </div>
       </div>

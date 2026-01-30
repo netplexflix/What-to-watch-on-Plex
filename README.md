@@ -69,6 +69,7 @@ docker compose up -d
   - `Random` (suggestions appear randomly for each user).
   - `Fixed` (everyone gets the same suggestions in the same order).
 - **Collections:** Enable a collection picker for the host when creating a session. Only items from selected collections will be suggested.
+- **Open in Plex Button:** Enables a button on the match winner page to open the item in Plex. Only works by opening Plex in a browser tab.
 
 ### ⚠️ **Do you Need Help or have Feedback?**
 - Join the [Discord](https://discord.gg/VBNUJd7tx3).

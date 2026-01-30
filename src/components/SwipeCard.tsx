@@ -12,9 +12,10 @@ interface SwipeCardProps {
   onSwipe: (direction: "left" | "right") => void;
   onUndo?: () => void;
   className?: string;
+  sessionMediaType?: 'movies' | 'shows' | 'both';
 }
 
-export const SwipeCard = ({ item, onSwipe, onUndo, className }: SwipeCardProps) => {
+export const SwipeCard = ({ item, onSwipe, onUndo, className, sessionMediaType }: SwipeCardProps) => {
   const [isFlipped, setIsFlipped] = useState(false);
   const [exitDirection, setExitDirection] = useState<"left" | "right" | null>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -202,11 +203,13 @@ export const SwipeCard = ({ item, onSwipe, onUndo, className }: SwipeCardProps) 
                 <h3 className="text-xl font-bold text-foreground">{item.title}</h3>
                 <p className="text-muted-foreground">{item.year}</p>
               </div>
-              <div className="absolute top-4 left-4">
-                <span className="px-2 py-1 text-xs font-medium bg-secondary/80 backdrop-blur rounded-full text-secondary-foreground">
-                  {item.type === "movie" ? "Movie" : "TV Show"}
-                </span>
-              </div>
+              {sessionMediaType === 'both' && (
+                <div className="absolute top-4 left-4">
+                  <span className="px-2 py-1 text-xs font-medium bg-secondary/80 backdrop-blur rounded-full text-secondary-foreground">
+                    {item.type === "movie" ? "Movie" : "TV Show"}
+                  </span>
+                </div>
+              )}
               {/* Tap hint */}
               <div className="absolute bottom-16 left-0 right-0 text-center">
                 <span className="text-xs text-muted-foreground/70">Tap for details</span>

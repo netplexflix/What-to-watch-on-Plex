@@ -1,12 +1,13 @@
 // File: src/pages/Results.tsx
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Home, Loader2, Frown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { MatchCelebration } from "@/components/MatchCelebration";
 import { NoMatchFallback } from "@/components/NoMatchFallback";
-import { sessionsApi } from "@/lib/api";
+import { PlaybackControl } from "@/components/PlaybackControl";
+import { sessionsApi, adminApi } from "@/lib/api";
 import { getLocalSession, clearLocalSession } from "@/lib/sessionStore";
 import { toast } from "sonner";
 import { useHaptics } from "@/hooks/useHaptics";
@@ -21,12 +22,24 @@ const Results = () => {
   const [winnerItem, setWinnerItem] = useState<PlexItem | null>(null);
   const [noMatch, setNoMatch] = useState(false);
   const [topItems, setTopItems] = useState<{ item: PlexItem; votes: number }[]>([]);
+  const [enablePlexButton, setEnablePlexButton] = useState(false);
+  
+  // Use ref to track if we've already loaded
+  const hasLoadedRef = useRef(false);
 
   useEffect(() => {
-    if (!code) return;
+    // Prevent multiple loads
+    if (!code || hasLoadedRef.current) return;
+    hasLoadedRef.current = true;
 
     const loadResults = async () => {
       try {
+        // Load settings first
+        const { data: settingsData } = await adminApi.getSessionSettings();
+        if (settingsData?.settings?.enable_plex_button) {
+          setEnablePlexButton(true);
+        }
+
         const { data: sessionData, error: sessionError } = await sessionsApi.getByCode(code);
 
         if (sessionError || !sessionData?.session) {
@@ -39,7 +52,7 @@ const Results = () => {
 
         if (session.status === "no_match") {
           setNoMatch(true);
-          await loadTopVotedItems(session.id);
+          await loadTopVotedItems(session.id, session.media_type);
           setLoading(false);
           return;
         }
@@ -86,9 +99,9 @@ const Results = () => {
     };
 
     loadResults();
-  }, [code, navigate, localSession, haptics]);
+  }, [code, navigate, haptics]);
 
-  const loadTopVotedItems = async (sid: string) => {
+  const loadTopVotedItems = async (sid: string, mediaType?: string) => {
     try {
       const { data: votesData } = await sessionsApi.getVotes(sid);
       
@@ -101,8 +114,7 @@ const Results = () => {
         }
       });
 
-      const { data: sessionData } = await sessionsApi.getById(sid);
-      const { data: mediaData } = await sessionsApi.getCachedMedia(sessionData?.session?.media_type || 'both');
+      const { data: mediaData } = await sessionsApi.getCachedMedia(mediaType || 'both');
       
       if (!mediaData?.items) return;
 
@@ -208,14 +220,22 @@ const Results = () => {
       <div className="flex-1 flex flex-col items-center justify-center px-6 py-8 relative z-10">
         {winnerItem && (
           <MatchCelebration item={winnerItem}>
-            <Button
-              onClick={handleNewSession}
-              variant="outline"
-              className="w-full h-12 text-base font-semibold border-secondary text-foreground hover:bg-secondary"
-            >
-              <Home size={18} className="mr-2" />
-              New Session
-            </Button>
+            <div className="flex flex-col gap-3 w-full">
+              {enablePlexButton && (
+                <PlaybackControl
+                  ratingKey={winnerItem.ratingKey}
+                  title={winnerItem.title}
+                />
+              )}
+              <Button
+                onClick={handleNewSession}
+                variant="outline"
+                className="w-full h-12 text-base font-semibold border-secondary text-foreground hover:bg-secondary"
+              >
+                <Home size={18} className="mr-2" />
+                New Session
+              </Button>
+            </div>
           </MatchCelebration>
         )}
       </div>

@@ -211,6 +211,15 @@ export const plexApi = {
       body: JSON.stringify({ redirectUri }),
     }),
 
+  getServerInfo: () =>
+    fetchApiGet<{ 
+      machineIdentifier: string; 
+      friendlyName: string;
+      host: string;
+      port: string;
+      protocol: string;
+    }>('/plex/server-info'),
+
   checkOAuthPin: (pinId: number) =>
     fetchApi<{ authenticated: boolean; authToken?: string; user?: { username: string; email: string; thumb: string } }>(
       '/plex/oauth/check-pin',

@@ -1388,4 +1388,233 @@ router.get('/last-cache-refresh', (req, res) => {
   }
 });
 
+// ============ PLAYBACK CONTROL ENDPOINTS ============
+
+// Get available Plex players/clients for a user
+router.get('/players', async (req, res) => {
+  try {
+    const userPlexToken = req.headers['x-plex-token'] as string;
+    
+    if (!userPlexToken) {
+      return res.status(401).json({ error: 'Plex token required' });
+    }
+    
+    const config = getPlexConfig();
+    if (!config?.plex_url) {
+      return res.status(400).json({ error: 'Plex server not configured' });
+    }
+    
+    // Get the server's machine identifier
+    let serverMachineId = '';
+    try {
+      const identityResponse = await fetch(
+        `${config.plex_url}/identity?X-Plex-Token=${config.plex_token}`,
+        { headers: { Accept: 'application/json' } }
+      );
+      
+      if (identityResponse.ok) {
+        const identityData = await identityResponse.json();
+        serverMachineId = identityData.MediaContainer?.machineIdentifier || '';
+      }
+    } catch (e) {
+      console.error('[Plex] Error getting server identity:', e);
+    }
+    
+    const clients: any[] = [];
+    const seenClientIds = new Set<string>();
+    
+    // Method 1: Get clients from /clients endpoint (devices that announced themselves)
+    try {
+      const clientsResponse = await fetch(
+        `${config.plex_url}/clients?X-Plex-Token=${config.plex_token}`,
+        { 
+          headers: { 
+            Accept: 'application/json',
+            'X-Plex-Client-Identifier': PLEX_CLIENT_ID,
+            'X-Plex-Product': PLEX_APP_NAME,
+          } 
+        }
+      );
+      
+      if (clientsResponse.ok) {
+        const clientsData = await clientsResponse.json();
+        console.log('[Plex] /clients response:', JSON.stringify(clientsData, null, 2));
+        
+        // The response structure can vary - check both Server and MediaContainer
+        const serverClients = clientsData.MediaContainer?.Server || [];
+        
+        for (const client of serverClients) {
+          if (client.machineIdentifier && !seenClientIds.has(client.machineIdentifier)) {
+            seenClientIds.add(client.machineIdentifier);
+            clients.push({
+              clientId: client.machineIdentifier,
+              name: client.name || 'Unknown Device',
+              product: client.product || '',
+              device: client.device || '',
+              platform: client.platform || '',
+              platformVersion: client.platformVersion || '',
+              local: true,
+              address: client.address,
+              port: client.port,
+              protocol: client.protocol || 'http',
+              protocolCapabilities: client.protocolCapabilities || '',
+            });
+          }
+        }
+      }
+    } catch (e) {
+      console.error('[Plex] Error fetching /clients:', e);
+    }
+    
+    // Method 2: Check active sessions for controllable players
+    try {
+      const sessionsResponse = await fetch(
+        `${config.plex_url}/status/sessions?X-Plex-Token=${config.plex_token}`,
+        { 
+          headers: { 
+            Accept: 'application/json',
+            'X-Plex-Client-Identifier': PLEX_CLIENT_ID,
+          } 
+        }
+      );
+      
+      if (sessionsResponse.ok) {
+        const sessionsData = await sessionsResponse.json();
+        console.log('[Plex] /status/sessions response:', JSON.stringify(sessionsData, null, 2));
+        
+        const sessions = sessionsData.MediaContainer?.Metadata || [];
+        
+        for (const session of sessions) {
+          if (session.Player?.machineIdentifier && !seenClientIds.has(session.Player.machineIdentifier)) {
+            seenClientIds.add(session.Player.machineIdentifier);
+            clients.push({
+              clientId: session.Player.machineIdentifier,
+              name: session.Player.title || session.Player.device || 'Active Player',
+              product: session.Player.product || '',
+              device: session.Player.device || '',
+              platform: session.Player.platform || '',
+              platformVersion: session.Player.platformVersion || '',
+              local: session.Player.local !== false,
+              address: session.Player.address,
+              port: session.Player.port,
+              protocol: 'http',
+              protocolCapabilities: session.Player.protocolCapabilities || '',
+              isPlaying: true,
+            });
+          }
+        }
+      }
+    } catch (e) {
+      console.error('[Plex] Error fetching sessions:', e);
+    }
+    
+    // Method 3: Get resources from plex.tv (includes all user's devices)
+    try {
+      const resourcesResponse = await fetch(
+        'https://plex.tv/api/v2/resources?includeHttps=1&includeRelay=1&includeIPv6=1',
+        {
+          headers: {
+            Accept: 'application/json',
+            'X-Plex-Token': userPlexToken,
+            'X-Plex-Product': PLEX_APP_NAME,
+            'X-Plex-Client-Identifier': PLEX_CLIENT_ID,
+          },
+        }
+      );
+      
+      if (resourcesResponse.ok) {
+        const resources = await resourcesResponse.json();
+        console.log('[Plex] plex.tv resources count:', resources.length);
+        
+        for (const resource of resources) {
+          // Only include player-capable devices (not servers)
+          const provides = resource.provides || '';
+          if (provides.includes('player') && !seenClientIds.has(resource.clientIdentifier)) {
+            seenClientIds.add(resource.clientIdentifier);
+            
+            // Find the best connection
+            let bestConnection = null;
+            if (resource.connections && resource.connections.length > 0) {
+              // Prefer local connections
+              bestConnection = resource.connections.find((c: any) => c.local) || resource.connections[0];
+            }
+            
+            clients.push({
+              clientId: resource.clientIdentifier,
+              name: resource.name || 'Unknown Device',
+              product: resource.product || '',
+              device: resource.device || '',
+              platform: resource.platform || '',
+              platformVersion: resource.platformVersion || '',
+              local: bestConnection?.local || false,
+              address: bestConnection?.address,
+              port: bestConnection?.port,
+              protocol: bestConnection?.protocol || 'http',
+              protocolCapabilities: provides,
+              lastSeenAt: resource.lastSeenAt,
+              presence: resource.presence,
+            });
+          }
+        }
+      }
+    } catch (e) {
+      console.error('[Plex] Error fetching plex.tv resources:', e);
+    }
+    
+    // Sort: local devices first, then by name
+    clients.sort((a, b) => {
+      if (a.isPlaying && !b.isPlaying) return -1;
+      if (!a.isPlaying && b.isPlaying) return 1;
+      if (a.local && !b.local) return -1;
+      if (!a.local && b.local) return 1;
+      return a.name.localeCompare(b.name);
+    });
+    
+    console.log(`[Plex] Found ${clients.length} total players`);
+    
+    res.json({ 
+      players: clients,
+      serverMachineId,
+    });
+  } catch (error) {
+    console.error('Error fetching Plex players:', error);
+    res.status(500).json({ error: 'Failed to fetch players' });
+  }
+});
+
+// ============ PLAYBACK CONTROL ENDPOINTS ============
+
+// Get server machine identifier and info for deep links
+router.get('/server-info', async (req, res) => {
+  try {
+    const config = getPlexConfig();
+    if (!config?.plex_url || !config?.plex_token) {
+      return res.status(400).json({ error: 'Plex not configured' });
+    }
+    
+    const response = await fetch(
+      `${config.plex_url}/identity?X-Plex-Token=${config.plex_token}`,
+      { headers: { Accept: 'application/json' } }
+    );
+    
+    if (!response.ok) {
+      throw new Error('Failed to get server identity');
+    }
+    
+    const data = await response.json();
+    const serverUrl = new URL(config.plex_url);
+    
+    res.json({
+      machineIdentifier: data.MediaContainer?.machineIdentifier,
+      friendlyName: data.MediaContainer?.friendlyName,
+      host: serverUrl.hostname,
+      port: serverUrl.port || '32400',
+      protocol: serverUrl.protocol.replace(':', ''),
+    });
+  } catch (error) {
+    console.error('Error getting server info:', error);
+    res.status(500).json({ error: 'Failed to get server info' });
+  }
+});
+
 export { router as plexRoutes };

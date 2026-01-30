@@ -1,7 +1,7 @@
 // File: src/components/admin/AdminSettingsTab.tsx
 import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
-import { Loader2, Save, Shuffle, ListOrdered, Hash, FolderOpen, Upload, Trash2, Image } from "lucide-react";
+import { Loader2, Save, Shuffle, ListOrdered, Hash, FolderOpen, Upload, Trash2, Image, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { adminApi } from "@/lib/api";
 import { toast } from "sonner";
@@ -13,6 +13,7 @@ interface SessionSettings {
   max_choices: number;
   max_exclusions: number;
   enable_collections: boolean;
+  enable_plex_button: boolean;
 }
 
 const DEFAULT_SETTINGS: SessionSettings = {
@@ -20,6 +21,7 @@ const DEFAULT_SETTINGS: SessionSettings = {
   max_choices: 3,
   max_exclusions: 3,
   enable_collections: false,
+  enable_plex_button: false,
 };
 
 export const AdminSettingsTab = () => {
@@ -48,6 +50,7 @@ export const AdminSettingsTab = () => {
           max_choices: data.settings.max_choices ?? 3,
           max_exclusions: data.settings.max_exclusions ?? 3,
           enable_collections: data.settings.enable_collections ?? false,
+          enable_plex_button: data.settings.enable_plex_button ?? false,
         });
       }
     } catch (err) {
@@ -252,7 +255,7 @@ export const AdminSettingsTab = () => {
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.1 }}
+        transition={{ delay: 0.2 }}
         className="glass-card rounded-xl p-4 space-y-4"
       >
         <div className="flex items-center gap-2">
@@ -344,7 +347,7 @@ export const AdminSettingsTab = () => {
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.2 }}
+        transition={{ delay: 0.3 }}
         className="glass-card rounded-xl p-4 space-y-4"
       >
         <h2 className="font-semibold text-foreground">Suggestion Order</h2>
@@ -393,7 +396,7 @@ export const AdminSettingsTab = () => {
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.3 }}
+        transition={{ delay: 0.4 }}
         className="glass-card rounded-xl p-4 space-y-4"
       >
         <div className="flex items-center gap-2">
@@ -437,6 +440,58 @@ export const AdminSettingsTab = () => {
             <FolderOpen size={24} className={!settings.enable_collections ? "text-primary" : "text-muted-foreground"} />
             <span className="font-medium text-foreground">Disabled</span>
             <span className="text-xs text-muted-foreground text-center">Use all library items</span>
+          </button>
+        </div>
+      </motion.div>
+
+      {/* Open in Plex Button */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.1 }}
+        className="glass-card rounded-xl p-4 space-y-4"
+      >
+        <div className="flex items-center gap-2">
+          <ExternalLink size={20} className="text-primary" />
+          <h2 className="font-semibold text-foreground">Open in Plex Button</h2>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          Show a button on the results page to open the winning item in Plex
+        </p>
+        
+        <div className="grid grid-cols-2 gap-3">
+          <button
+            onClick={() => {
+              haptics.selection();
+              setSettings(s => ({ ...s, enable_plex_button: true }));
+            }}
+            className={cn(
+              "p-4 rounded-lg transition-all duration-200 flex flex-col items-center gap-2",
+              settings.enable_plex_button
+                ? "bg-primary/20 border-2 border-primary"
+                : "bg-secondary hover:bg-secondary/80 border-2 border-transparent"
+            )}
+          >
+            <ExternalLink size={24} className={settings.enable_plex_button ? "text-primary" : "text-muted-foreground"} />
+            <span className="font-medium text-foreground">Enabled</span>
+            <span className="text-xs text-muted-foreground text-center">Show button</span>
+          </button>
+          
+          <button
+            onClick={() => {
+              haptics.selection();
+              setSettings(s => ({ ...s, enable_plex_button: false }));
+            }}
+            className={cn(
+              "p-4 rounded-lg transition-all duration-200 flex flex-col items-center gap-2",
+              !settings.enable_plex_button
+                ? "bg-primary/20 border-2 border-primary"
+                : "bg-secondary hover:bg-secondary/80 border-2 border-transparent"
+            )}
+          >
+            <ExternalLink size={24} className={!settings.enable_plex_button ? "text-primary" : "text-muted-foreground"} />
+            <span className="font-medium text-foreground">Disabled</span>
+            <span className="text-xs text-muted-foreground text-center">Hide button</span>
           </button>
         </div>
       </motion.div>
