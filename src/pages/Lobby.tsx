@@ -3,6 +3,7 @@ import { useState, useEffect, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Copy, Users, Play, Loader2, FolderOpen, Check, ChevronDown, ChevronUp } from "lucide-react";
+import { QRCodeSVG } from "qrcode.react";
 import { Button } from "@/components/ui/button";
 import { Logo } from "@/components/Logo";
 import { SessionCodeDisplay } from "@/components/SessionCodeDisplay";
@@ -50,6 +51,9 @@ const Lobby = () => {
   const [selectedCollections, setSelectedCollections] = useState<string[]>([]);
   const [collectionsLoading, setCollectionsLoading] = useState(false);
   const [collectionsExpanded, setCollectionsExpanded] = useState(false);
+  
+  // QR Code state
+  const [qrEnabled, setQrEnabled] = useState(false);
 
   useEffect(() => {
     if (!code || isInitializedRef.current) return;
@@ -81,10 +85,12 @@ const Lobby = () => {
           setParticipants(participantsData.participants);
         }
 
-        // Check if collections are enabled
+        // Check session settings
         const { data: settingsData } = await adminApi.getSessionSettings();
         const collectionsEnabledSetting = settingsData?.settings?.enable_collections ?? false;
+        const qrEnabledSetting = settingsData?.settings?.enable_lobby_qr ?? false;
         setCollectionsEnabled(collectionsEnabledSetting);
+        setQrEnabled(qrEnabledSetting);
 
         // If host and collections enabled, fetch collections
         if (userIsHost && collectionsEnabledSetting) {
@@ -215,6 +221,9 @@ const Lobby = () => {
     }
   };
 
+  // Generate the invite link for QR code
+  const inviteLink = `${window.location.origin}/join/${code}`;
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
@@ -244,16 +253,36 @@ const Lobby = () => {
           <h1 className="text-2xl font-bold text-foreground text-center mb-2">
             Waiting Room
           </h1>
-          <p className="text-muted-foreground text-center mb-8">
+          <p className="text-muted-foreground text-center mb-6">
             Share the code with your friends to join
           </p>
+
+          {/* QR Code (if enabled) */}
+          {qrEnabled && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="flex justify-center mb-6"
+            >
+              <div className="p-2 bg-white rounded-xl shadow-lg">
+                <QRCodeSVG
+                  value={inviteLink}
+                  size={100}
+                  level="M"
+                  includeMargin={false}
+                  bgColor="#ffffff"
+                  fgColor="#000000"
+                />
+              </div>
+            </motion.div>
+          )}
 
           {/* Session Code */}
           <SessionCodeDisplay 
             code={code || ""} 
             onCopy={handleCopyCode} 
             copied={copied} 
-            className="my-8"
+            className="my-6"
           />
 
           {/* Copy Link Button */}

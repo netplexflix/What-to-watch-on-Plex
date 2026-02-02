@@ -1,7 +1,7 @@
 // File: src/components/admin/AdminSettingsTab.tsx
 import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
-import { Loader2, Save, Shuffle, ListOrdered, Hash, Upload, Trash2, Image, ExternalLink, Tag, X, Plus, Star } from "lucide-react";
+import { Loader2, Save, Shuffle, ListOrdered, Hash, Upload, Trash2, Image, ExternalLink, Tag, X, Plus, Star, QrCode } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -20,6 +20,7 @@ interface SessionSettings {
   label_restriction_mode: "include" | "exclude";
   restricted_labels: string[];
   rating_display: "critic" | "audience" | "both";
+  enable_lobby_qr: boolean;
 }
 
 const DEFAULT_SETTINGS: SessionSettings = {
@@ -32,6 +33,7 @@ const DEFAULT_SETTINGS: SessionSettings = {
   label_restriction_mode: "include",
   restricted_labels: [],
   rating_display: "critic",
+  enable_lobby_qr: false,
 };
 
 export const AdminSettingsTab = () => {
@@ -66,6 +68,7 @@ export const AdminSettingsTab = () => {
           label_restriction_mode: data.settings.label_restriction_mode || "include",
           restricted_labels: data.settings.restricted_labels || [],
           rating_display: data.settings.rating_display || "critic",
+          enable_lobby_qr: data.settings.enable_lobby_qr ?? false,
         });
       }
     } catch (err) {
@@ -291,6 +294,7 @@ export const AdminSettingsTab = () => {
         )}
       </motion.div>
 
+
       {/* Max Preferences */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
@@ -481,6 +485,33 @@ export const AdminSettingsTab = () => {
             onCheckedChange={(checked) => {
               haptics.selection();
               setSettings(s => ({ ...s, enable_plex_button: checked }));
+            }}
+          />
+        </div>
+      </motion.div>
+
+      {/* Lobby QR Code Toggle */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.05 }}
+        className="glass-card rounded-xl p-4"
+      >
+        <div className="flex items-center justify-between">
+          <div className="flex-1">
+            <div className="flex items-center gap-2">
+              <QrCode size={20} className="text-primary" />
+              <h2 className="font-semibold text-foreground">Lobby QR Code</h2>
+            </div>
+            <p className="text-sm text-muted-foreground mt-1">
+              Display a QR code in the lobby for easy session joining
+            </p>
+          </div>
+          <Switch
+            checked={settings.enable_lobby_qr}
+            onCheckedChange={(checked) => {
+              haptics.selection();
+              setSettings(s => ({ ...s, enable_lobby_qr: checked }));
             }}
           />
         </div>
