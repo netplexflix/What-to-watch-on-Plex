@@ -23,6 +23,7 @@ const Results = () => {
   const [noMatch, setNoMatch] = useState(false);
   const [topItems, setTopItems] = useState<{ item: PlexItem; votes: number }[]>([]);
   const [enablePlexButton, setEnablePlexButton] = useState(false);
+  const [ratingDisplay, setRatingDisplay] = useState<'critic' | 'audience' | 'both'>('critic');
   
   // Use ref to track if we've already loaded
   const hasLoadedRef = useRef(false);
@@ -36,8 +37,13 @@ const Results = () => {
       try {
         // Load settings first
         const { data: settingsData } = await adminApi.getSessionSettings();
-        if (settingsData?.settings?.enable_plex_button) {
-          setEnablePlexButton(true);
+        if (settingsData?.settings) {
+          if (settingsData.settings.enable_plex_button) {
+            setEnablePlexButton(true);
+          }
+          if (settingsData.settings.rating_display) {
+            setRatingDisplay(settingsData.settings.rating_display);
+          }
         }
 
         const { data: sessionData, error: sessionError } = await sessionsApi.getByCode(code);
@@ -219,7 +225,7 @@ const Results = () => {
 
       <div className="flex-1 flex flex-col items-center justify-center px-6 py-8 relative z-10">
         {winnerItem && (
-          <MatchCelebration item={winnerItem}>
+          <MatchCelebration item={winnerItem} ratingDisplay={ratingDisplay}>
             <div className="flex flex-col gap-3 w-full">
               {enablePlexButton && (
                 <PlaybackControl

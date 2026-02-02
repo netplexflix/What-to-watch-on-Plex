@@ -135,6 +135,7 @@ export interface CacheRefreshProgress {
   showsTotal: number;
   languagesFound: number;
   collectionsProcessed: number;
+  labelsFound?: number;
   error?: string;
 }
 
@@ -152,7 +153,7 @@ export const plexApi = {
     }),
 
   getCacheStats: () =>
-    fetchApi<{ mediaCount: number; languagesCached: boolean; collectionsCached?: boolean }>('/plex/get-cache-stats', {
+    fetchApi<{ mediaCount: number; languagesCached: boolean; collectionsCached?: boolean; labelsCached?: boolean; labelsCount?: number }>('/plex/get-cache-stats', {
       method: 'POST',
     }),
 
@@ -160,7 +161,7 @@ export const plexApi = {
     fetchApiGet<CacheRefreshProgress>('/plex/cache-refresh-progress'),
 
   refreshCache: (libraryKeys: string[]) =>
-    fetchApi<{ success: boolean; mediaCount: number; movieCount: number; showCount: number; languageCount: number; collectionsCount?: number }>(
+    fetchApi<{ success: boolean; mediaCount: number; movieCount: number; showCount: number; languageCount: number; labelsCount?: number; collectionsCount?: number }>(
       '/plex/refresh-cache',
       {
         method: 'POST',
@@ -180,10 +181,34 @@ export const plexApi = {
       { method: 'POST' }
     ),
 
+  getLabels: () =>
+    fetchApi<{ labels: { label: string; count: number }[]; cached: boolean }>(
+      '/plex/get-labels',
+      { method: 'POST' }
+    ),
+
   getWatchedKeys: (userPlexToken: string) =>
     fetchApi<{ watchedKeys: string[] }>('/plex/get-watched-keys', {
       method: 'POST',
       body: JSON.stringify({ userPlexToken }),
+    }),
+
+  getWatchlist: (userPlexToken: string) =>
+    fetchApi<{ watchlistKeys: string[]; watchlistCount: number; matchedCount: number }>('/plex/get-watchlist', {
+      method: 'POST',
+      body: JSON.stringify({ userPlexToken }),
+    }),
+
+  addToWatchlist: (userPlexToken: string, ratingKey: string) =>
+    fetchApi<{ success: boolean }>('/plex/add-to-watchlist', {
+      method: 'POST',
+      body: JSON.stringify({ userPlexToken, ratingKey }),
+    }),
+
+  checkWatchlist: (userPlexToken: string, ratingKey: string) =>
+    fetchApi<{ inWatchlist: boolean }>('/plex/check-watchlist', {
+      method: 'POST',
+      body: JSON.stringify({ userPlexToken, ratingKey }),
     }),
 
   getCollections: (libraryKeys: string[], mediaType?: string) =>
@@ -237,6 +262,7 @@ export const sessionsApi = {
     isGuest: boolean; 
     plexToken?: string; 
     timedDuration?: number;
+    useWatchlist?: boolean;
   }) =>
     fetchApi<{ session: { id: string; code: string }; participant: { id: string } }>('/sessions/create', {
       method: 'POST',

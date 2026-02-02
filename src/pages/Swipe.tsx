@@ -6,7 +6,7 @@ import { Loader2, RotateCcw, Clock } from "lucide-react";
 import { Logo } from "@/components/Logo";
 import { SwipeCard } from "@/components/SwipeCard";
 import { Button } from "@/components/ui/button";
-import { sessionsApi, plexApi } from "@/lib/api";
+import { sessionsApi, plexApi, adminApi } from "@/lib/api";
 import { wsClient } from "@/lib/websocket";
 import { getLocalSession } from "@/lib/sessionStore";
 import { toast } from "sonner";
@@ -169,6 +169,12 @@ const Swipe = () => {
   const [matchFound, setMatchFound] = useState(false);
   const [winnerItemKey, setWinnerItemKey] = useState<string | null>(null);
   const [sessionMediaType, setSessionMediaType] = useState<'movies' | 'shows' | 'both'>('both');
+  const [ratingDisplay, setRatingDisplay] = useState<'critic' | 'audience' | 'both'>('critic');
+  const [labelRestrictions, setLabelRestrictions] = useState<{
+    enabled: boolean;
+    mode: 'include' | 'exclude';
+    labels: string[];
+  }>({ enabled: false, mode: 'include', labels: [] });
   
   // Timer state for timed sessions
   const [isTimedSession, setIsTimedSession] = useState(false);
@@ -190,6 +196,7 @@ const Swipe = () => {
   const isSwipingRef = useRef(false);
   const timerIntervalRef = useRef<number | null>(null);
   const isTimedSessionRef = useRef(false);
+  const labelRestrictionsRef = useRef(labelRestrictions);
 
   useEffect(() => {
     currentIndexRef.current = currentIndex;
@@ -206,6 +213,10 @@ const Swipe = () => {
   useEffect(() => {
     isTimedSessionRef.current = isTimedSession;
   }, [isTimedSession]);
+
+  useEffect(() => {
+    labelRestrictionsRef.current = labelRestrictions;
+  }, [labelRestrictions]);
 
   // Timer countdown effect
   useEffect(() => {
@@ -348,7 +359,7 @@ const Swipe = () => {
     };
   }, []);
 
-  const loadMediaItems = useCallback(async (sid: string, mediaType?: string | null) => {
+  const loadMediaItems = useCallback(async (sid: string, mediaType?: string | null, useWatchlist?: boolean, hostPlexToken?: string | null) => {
     if (itemsLoadedRef.current) return;
     
     try {
@@ -375,8 +386,27 @@ const Swipe = () => {
       const aggregatedFilters = aggregatePreferences(mappedParticipants);
       console.log('[Swipe] Aggregated filters:', aggregatedFilters);
 
-      const { data: settingsData } = await sessionsApi.getConfig('session_settings');
-      const sessionSettings = settingsData?.value || {};
+      // Load admin settings
+      let currentLabelRestrictions = labelRestrictionsRef.current;
+      try {
+        const { data: settingsData } = await adminApi.getSessionSettings();
+        if (settingsData?.settings) {
+          setRatingDisplay(settingsData.settings.rating_display || 'critic');
+          if (settingsData.settings.enable_label_restrictions) {
+            currentLabelRestrictions = {
+              enabled: true,
+              mode: settingsData.settings.label_restriction_mode || 'include',
+              labels: settingsData.settings.restricted_labels || [],
+            };
+            setLabelRestrictions(currentLabelRestrictions);
+          }
+        }
+      } catch (e) {
+        console.error('[Swipe] Error loading admin settings:', e);
+      }
+
+      const { data: sessionSettingsData } = await sessionsApi.getConfig('session_settings');
+      const sessionSettings = sessionSettingsData?.value || {};
       const orderMode = sessionSettings.suggestion_order || "random";
       orderModeRef.current = orderMode;
 
@@ -387,20 +417,42 @@ const Swipe = () => {
       
       let fetchedItems: any[] = [];
       
-      const { data: cachedData } = await sessionsApi.getCachedMedia(mediaType || 'both');
+      // Check if this is a watchlist-based session
+      if (useWatchlist && hostPlexToken) {
+        setLoadingMessage("Loading from watchlist...");
+        try {
+          const { data: watchlistData } = await plexApi.getWatchlist(hostPlexToken);
+          if (watchlistData?.watchlistKeys && watchlistData.watchlistKeys.length > 0) {
+            // Get all cached items first
+            const { data: cachedData } = await sessionsApi.getCachedMedia(mediaType || 'both');
+            if (cachedData?.items) {
+              const watchlistSet = new Set(watchlistData.watchlistKeys);
+              fetchedItems = cachedData.items.filter((item: any) => watchlistSet.has(item.ratingKey));
+              console.log(`[Swipe] Filtered to ${fetchedItems.length} watchlist items`);
+            }
+          }
+        } catch (e) {
+          console.error('[Swipe] Error loading watchlist:', e);
+        }
+      }
       
-      if (cachedData?.items && cachedData.items.length > 0) {
-        console.log(`[Swipe] Loaded ${cachedData.items.length} items from cache`);
-        fetchedItems = cachedData.items;
-      } else {
-        setLoadingMessage("Fetching media from Plex...");
-        const { data: mediaData } = await plexApi.getMedia(
-          mediaType || 'both',
-          aggregatedFilters,
-          userPlexToken || undefined
-        );
-        fetchedItems = mediaData?.items || [];
-        console.log(`[Swipe] Loaded ${fetchedItems.length} items from Plex API`);
+      // If no watchlist items or not a watchlist session, load from cache normally
+      if (fetchedItems.length === 0) {
+        const { data: cachedData } = await sessionsApi.getCachedMedia(mediaType || 'both');
+        
+        if (cachedData?.items && cachedData.items.length > 0) {
+          console.log(`[Swipe] Loaded ${cachedData.items.length} items from cache`);
+          fetchedItems = cachedData.items;
+        } else {
+          setLoadingMessage("Fetching media from Plex...");
+          const { data: mediaData } = await plexApi.getMedia(
+            mediaType || 'both',
+            aggregatedFilters,
+            userPlexToken || undefined
+          );
+          fetchedItems = mediaData?.items || [];
+          console.log(`[Swipe] Loaded ${fetchedItems.length} items from Plex API`);
+        }
       }
 
       // Check if session has selected collections
@@ -426,6 +478,23 @@ const Swipe = () => {
         } catch (err) {
           console.error('[Swipe] Error filtering by collections:', err);
         }
+      }
+
+      // Apply label restrictions if enabled
+      if (currentLabelRestrictions.enabled && currentLabelRestrictions.labels.length > 0) {
+        const beforeCount = fetchedItems.length;
+        fetchedItems = fetchedItems.filter((item: any) => {
+          const itemLabels = item.labels || [];
+          
+          if (currentLabelRestrictions.mode === 'include') {
+            // Only include items that have at least one of the restricted labels
+            return currentLabelRestrictions.labels.some(label => itemLabels.includes(label));
+          } else {
+            // Exclude items that have any of the restricted labels
+            return !currentLabelRestrictions.labels.some(label => itemLabels.includes(label));
+          }
+        });
+        console.log(`[Swipe] After label restrictions: ${fetchedItems.length} items (${currentLabelRestrictions.mode} mode, removed ${beforeCount - fetchedItems.length})`);
       }
 
       setLoadingMessage("Applying filters...");
@@ -648,7 +717,7 @@ const Swipe = () => {
         } else if (!itemsLoadedRef.current) {
           setParticipants(currentParticipants);
           participantsRef.current = currentParticipants;
-          await loadMediaItems(session.id, session.media_type);
+          await loadMediaItems(session.id, session.media_type, session.use_watchlist, session.host_plex_token);
         }
       } catch (error) {
         console.error("[Swipe] Error loading session:", error);
@@ -679,7 +748,10 @@ const Swipe = () => {
         if (allCompleted && !itemsLoadedRef.current) {
           setParticipants(currentParticipants);
           participantsRef.current = currentParticipants;
-          await loadMediaItems(sid, mediaTypeRef.current);
+          
+          // Get session data for watchlist info
+          const { data: sessionData } = await sessionsApi.getById(sid);
+          await loadMediaItems(sid, mediaTypeRef.current, sessionData?.session?.use_watchlist, sessionData?.session?.host_plex_token);
         }
       }
     });
@@ -1100,6 +1172,7 @@ const Swipe = () => {
               onSwipe={handleSwipe}
               onUndo={swipeHistory.length > 0 ? handleUndo : undefined}
               sessionMediaType={sessionMediaType}
+              ratingDisplay={ratingDisplay}
             />
           )}
         </div>

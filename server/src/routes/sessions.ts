@@ -1,4 +1,4 @@
-// Frouter.patch('/:id', (req, res) => {ile: server/src/routes/sessions.ts
+// File: server/src/routes/sessions.ts
 import { Router } from 'express';
 import { getDb, generateId } from '../db.js';
 import { broadcastToSession } from '../websocket.js';
@@ -19,7 +19,7 @@ router.post('/create', (req, res) => {
   try {
     console.log('[Sessions] Create request body:', JSON.stringify(req.body));
     
-    const { mediaType, displayName, isGuest, plexToken, timedDuration } = req.body;
+    const { mediaType, displayName, isGuest, plexToken, timedDuration, useWatchlist } = req.body;
     
     // Validate required fields
     if (!displayName || typeof displayName !== 'string' || !displayName.trim()) {
@@ -51,19 +51,22 @@ router.post('/create', (req, res) => {
     const duration = timedDuration && typeof timedDuration === 'number' && timedDuration > 0 
       ? timedDuration 
       : null;
+
+    // Handle useWatchlist
+    const watchlistMode = useWatchlist && plexToken ? 1 : 0;
     
-    console.log('[Sessions] Creating session:', { sessionId, code, mediaType, duration, displayName: displayName.trim() });
+    console.log('[Sessions] Creating session:', { sessionId, code, mediaType, duration, displayName: displayName.trim(), useWatchlist: watchlistMode });
     
-    // Create session - check if timed_duration column exists
+    // Create session - check if columns exist
     try {
       db.prepare(`
-        INSERT INTO sessions (id, code, status, media_type, preferences, timed_duration, created_at, updated_at)
-        VALUES (?, ?, 'waiting', ?, '{}', ?, datetime('now'), datetime('now'))
-      `).run(sessionId, code, mediaType || 'both', duration);
+        INSERT INTO sessions (id, code, status, media_type, preferences, timed_duration, use_watchlist, host_plex_token, created_at, updated_at)
+        VALUES (?, ?, 'waiting', ?, '{}', ?, ?, ?, datetime('now'), datetime('now'))
+      `).run(sessionId, code, mediaType || 'both', duration, watchlistMode, watchlistMode ? plexToken : null);
     } catch (dbError: any) {
-      // If timed_duration column doesn't exist, try without it
-      if (dbError.message && dbError.message.includes('timed_duration')) {
-        console.log('[Sessions] timed_duration column not found, creating session without it');
+      // If columns don't exist, try without them
+      if (dbError.message && (dbError.message.includes('timed_duration') || dbError.message.includes('use_watchlist'))) {
+        console.log('[Sessions] Some columns not found, creating session with basic columns');
         db.prepare(`
           INSERT INTO sessions (id, code, status, media_type, preferences, created_at, updated_at)
           VALUES (?, ?, 'waiting', ?, '{}', datetime('now'), datetime('now'))
@@ -122,6 +125,7 @@ router.get('/code/:code', (req, res) => {
         preferences,
         timed_duration: session.timed_duration || null,
         timer_end_at: session.timer_end_at || null,
+        use_watchlist: !!session.use_watchlist,
       }
     });
   } catch (error) {
@@ -158,6 +162,7 @@ router.get('/:id', (req, res) => {
         preferences,
         timed_duration: session.timed_duration || null,
         timer_end_at: session.timer_end_at || null,
+        use_watchlist: !!session.use_watchlist,
       }
     });
   } catch (error) {
@@ -268,6 +273,7 @@ router.patch('/:id', (req, res) => {
         preferences,
         timed_duration: session.timed_duration || null,
         timer_end_at: session.timer_end_at || null,
+        use_watchlist: !!session.use_watchlist,
       } : null 
     });
   } catch (error) {

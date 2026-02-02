@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { ArrowLeft, User, LogIn, Check, Loader2, Clock, Minus, Plus, Infinity, Timer } from "lucide-react";
+import { ArrowLeft, User, LogIn, Check, Loader2, Clock, Minus, Plus, Infinity, Timer, List, Library } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Logo } from "@/components/Logo";
@@ -28,6 +28,9 @@ const CreateSession = () => {
   const [mediaType, setMediaType] = useState<"movies" | "shows" | "both">("both");
   const [sessionMode, setSessionMode] = useState<"classic" | "timed">("classic");
   const [timedMinutes, setTimedMinutes] = useState(5);
+  const [useWatchlist, setUseWatchlist] = useState(false);
+  const [watchlistCount, setWatchlistCount] = useState<number | null>(null);
+  const [isLoadingWatchlist, setIsLoadingWatchlist] = useState(false);
   
   // Plex OAuth state
   const [plexLoading, setPlexLoading] = useState(false);
@@ -42,6 +45,38 @@ const CreateSession = () => {
       }
     };
   }, []);
+
+  // Load watchlist count when user logs in with Plex
+  useEffect(() => {
+    if (plexToken && !joinAsGuest) {
+      loadWatchlistCount();
+    } else {
+      setWatchlistCount(null);
+      setUseWatchlist(false);
+    }
+  }, [plexToken, joinAsGuest]);
+
+  const loadWatchlistCount = async () => {
+    if (!plexToken) return;
+    
+    setIsLoadingWatchlist(true);
+    try {
+      const { data, error } = await plexApi.getWatchlist(plexToken);
+      if (error) {
+        console.error("Error loading watchlist:", error);
+        setWatchlistCount(0);
+      } else if (data) {
+        // Use matchedCount which is the number of watchlist items that exist in the local library
+        setWatchlistCount(data.matchedCount ?? 0);
+        console.log(`[CreateSession] Watchlist loaded: ${data.watchlistCount} total, ${data.matchedCount} matched to library`);
+      }
+    } catch (err) {
+      console.error("Error loading watchlist:", err);
+      setWatchlistCount(0);
+    } finally {
+      setIsLoadingWatchlist(false);
+    }
+  };
 
   const handlePlexLogin = async () => {
     setPlexLoading(true);
@@ -128,6 +163,7 @@ const CreateSession = () => {
         isGuest: boolean;
         plexToken?: string;
         timedDuration?: number;
+        useWatchlist?: boolean;
       } = {
         mediaType,
         displayName: displayName.trim(),
@@ -143,6 +179,16 @@ const CreateSession = () => {
       if (sessionMode === "timed") {
         createData.timedDuration = timedMinutes;
       }
+
+      // Add watchlist mode if selected and user has plex token
+      if (useWatchlist && plexToken && watchlistCount && watchlistCount > 0) {
+        createData.useWatchlist = true;
+      }
+
+      console.log('[CreateSession] Creating session with data:', { 
+        ...createData, 
+        plexToken: createData.plexToken ? '[REDACTED]' : undefined 
+      });
 
       const { data, error } = await sessionsApi.create(createData);
 
@@ -173,6 +219,7 @@ const CreateSession = () => {
     setJoinAsGuest(true);
     setPlexUser(null);
     setPlexToken(null);
+    setUseWatchlist(false);
     // Clear any ongoing polling
     if (pollIntervalRef.current) {
       clearInterval(pollIntervalRef.current);
@@ -205,6 +252,9 @@ const CreateSession = () => {
   // Determine the visual state of the Plex button
   const isPlexSelected = !joinAsGuest || plexLoading;
   const isPlexAuthenticated = !joinAsGuest && plexUser !== null;
+
+  // Determine if watchlist option should be disabled
+  const watchlistDisabled = isLoadingWatchlist || watchlistCount === null || watchlistCount === 0;
 
   return (
     <div className="min-h-screen flex flex-col relative overflow-hidden">
@@ -328,6 +378,91 @@ const CreateSession = () => {
                 </button>
               </div>
             </div>
+
+            {/* Watchlist option - only show when logged in with Plex */}
+            {isPlexAuthenticated && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                className="space-y-3"
+              >
+                <label className="text-sm font-medium text-foreground">
+                  Source
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    onClick={() => {
+                      haptics.selection();
+                      setUseWatchlist(false);
+                    }}
+                    className={cn(
+                      "relative p-4 rounded-xl transition-all duration-200",
+                      !useWatchlist
+                        ? "glass-card border-2 border-primary glow-primary"
+                        : "glass-card border-2 border-transparent hover:border-muted-foreground/30"
+                    )}
+                  >
+                    {!useWatchlist && (
+                      <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-primary flex items-center justify-center">
+                        <Check size={12} className="text-primary-foreground" />
+                      </div>
+                    )}
+                    <Library
+                      className={cn(
+                        "mx-auto mb-2",
+                        !useWatchlist ? "text-primary" : "text-muted-foreground"
+                      )}
+                      size={24}
+                    />
+                    <p className="font-medium text-foreground">Full Library</p>
+                    <p className="text-xs text-muted-foreground">All available items</p>
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (!watchlistDisabled) {
+                        haptics.selection();
+                        setUseWatchlist(true);
+                      }
+                    }}
+                    disabled={watchlistDisabled}
+                    className={cn(
+                      "relative p-4 rounded-xl transition-all duration-200",
+                      useWatchlist
+                        ? "glass-card border-2 border-primary glow-primary"
+                        : "glass-card border-2 border-transparent hover:border-muted-foreground/30",
+                      watchlistDisabled && "opacity-50 cursor-not-allowed"
+                    )}
+                  >
+                    {useWatchlist && (
+                      <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-primary flex items-center justify-center">
+                        <Check size={12} className="text-primary-foreground" />
+                      </div>
+                    )}
+                    {isLoadingWatchlist ? (
+                      <Loader2 className="mx-auto mb-2 animate-spin text-muted-foreground" size={24} />
+                    ) : (
+                      <List
+                        className={cn(
+                          "mx-auto mb-2",
+                          useWatchlist ? "text-primary" : "text-muted-foreground"
+                        )}
+                        size={24}
+                      />
+                    )}
+                    <p className="font-medium text-foreground">My Watchlist</p>
+                    <p className="text-xs text-muted-foreground">
+                      {isLoadingWatchlist 
+                        ? "Loading..." 
+                        : watchlistCount !== null 
+                          ? watchlistCount > 0 
+                            ? `${watchlistCount} item${watchlistCount !== 1 ? 's' : ''}`
+                            : "No items in library"
+                          : "Loading..."}
+                    </p>
+                  </button>
+                </div>
+              </motion.div>
+            )}
 
             {/* Media type selection */}
             <MediaTypeSelector value={mediaType} onChange={setMediaType} />

@@ -56,6 +56,7 @@ const TimedResults = () => {
   const [isHost, setIsHost] = useState(false);
   const [localSession, setLocalSession] = useState(() => getLocalSession());
   const [enablePlexButton, setEnablePlexButton] = useState(false);
+  const [ratingDisplay, setRatingDisplay] = useState<'critic' | 'audience' | 'both'>('critic');
   
   const mediaMapRef = useRef<Map<string, any>>(new Map());
   const hasHandledResultRef = useRef(false);
@@ -138,8 +139,13 @@ const TimedResults = () => {
         // Load settings
         try {
           const { data: settingsData } = await adminApi.getSessionSettings();
-          if (settingsData?.settings?.enable_plex_button) {
-            setEnablePlexButton(true);
+          if (settingsData?.settings) {
+            if (settingsData.settings.enable_plex_button) {
+              setEnablePlexButton(true);
+            }
+            if (settingsData.settings.rating_display) {
+              setRatingDisplay(settingsData.settings.rating_display);
+            }
           }
         } catch (e) {
           console.error('[TimedResults] Error loading settings:', e);
@@ -464,7 +470,7 @@ const TimedResults = () => {
           <div className="absolute inset-0 bg-gradient-to-br from-primary/5 via-transparent to-accent/5" />
         </div>
         <div className="flex-1 flex flex-col items-center justify-center px-6 py-8 relative z-10">
-          <MatchCelebration item={finalWinner}>
+          <MatchCelebration item={finalWinner} ratingDisplay={ratingDisplay}>
             <div className="flex flex-col gap-3 w-full">
               {enablePlexButton && (
                 <PlaybackControl

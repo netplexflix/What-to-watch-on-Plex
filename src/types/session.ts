@@ -11,6 +11,8 @@ export interface Session {
   media_type?: 'movies' | 'shows' | 'both';
   timed_duration?: number | null;  // in minutes
   timer_end_at?: string | null;    // ISO timestamp
+  use_watchlist?: boolean;
+  host_plex_token?: string | null;
 }
 
 // Selection state: undefined = not selected, true = preferred, false = excluded
@@ -66,4 +68,5 @@ export interface PlexItem {
   studio?: string;
   audienceRating?: number;
   languages?: string[];
+  labels?: string[];
 }
