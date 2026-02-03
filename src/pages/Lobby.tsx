@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Copy, Users, Play, Loader2, FolderOpen, Check, ChevronDown, ChevronUp } from "lucide-react";
+import { Copy, Users, Play, Loader2, FolderOpen, Check, ChevronDown, ChevronUp, Search } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { Button } from "@/components/ui/button";
 import { Logo } from "@/components/Logo";
@@ -51,6 +51,7 @@ const Lobby = () => {
   const [selectedCollections, setSelectedCollections] = useState<string[]>([]);
   const [collectionsLoading, setCollectionsLoading] = useState(false);
   const [collectionsExpanded, setCollectionsExpanded] = useState(false);
+  const [collectionSearchQuery, setCollectionSearchQuery] = useState("");
   
   // QR Code state
   const [qrEnabled, setQrEnabled] = useState(false);
@@ -179,10 +180,35 @@ const Lobby = () => {
   const handleCopyLink = async () => {
     try {
       const link = `${window.location.origin}/join/${code}`;
-      await navigator.clipboard.writeText(link);
-      haptics.light();
-      toast.success("Invite link copied!");
+      
+      // Try modern clipboard API first
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(link);
+        haptics.light();
+        toast.success("Invite link copied!");
+      } else {
+        // Fallback for non-secure contexts
+        const textArea = document.createElement("textarea");
+        textArea.value = link;
+        textArea.style.position = "fixed";
+        textArea.style.left = "-999999px";
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        
+        try {
+          document.execCommand('copy');
+          haptics.light();
+          toast.success("Invite link copied!");
+        } catch (err) {
+          toast.error("Failed to copy link - please copy manually");
+          console.error("Fallback copy failed:", err);
+        } finally {
+          document.body.removeChild(textArea);
+        }
+      }
     } catch (err) {
+      console.error("Copy error:", err);
       toast.error("Failed to copy link");
     }
   };
@@ -336,39 +362,66 @@ const Lobby = () => {
                       <Loader2 className="animate-spin text-primary" size={24} />
                     </div>
                   ) : (
-                    <div className="max-h-48 overflow-y-auto space-y-2">
-                      {collections.map((collection) => (
-                        <button
-                          key={collection.ratingKey}
-                          onClick={() => toggleCollection(collection.ratingKey)}
-                          className={cn(
-                            "w-full p-3 rounded-lg text-left transition-all duration-200 flex items-center gap-3",
-                            selectedCollections.includes(collection.ratingKey)
-                              ? "bg-primary/20 border border-primary"
-                              : "bg-secondary hover:bg-secondary/80"
-                          )}
-                        >
-                          {collection.thumb ? (
-                            <img 
-                              src={collection.thumb} 
-                              alt={collection.title}
-                              className="w-10 h-10 rounded object-cover"
-                            />
-                          ) : (
-                            <div className="w-10 h-10 rounded bg-muted flex items-center justify-center">
-                              <FolderOpen size={16} className="text-muted-foreground" />
-                            </div>
-                          )}
-                          <div className="flex-1 min-w-0">
-                            <p className="font-medium text-foreground truncate">{collection.title}</p>
-                            <p className="text-xs text-muted-foreground">{collection.childCount} items</p>
-                          </div>
-                          {selectedCollections.includes(collection.ratingKey) && (
-                            <Check size={18} className="text-primary flex-shrink-0" />
-                          )}
-                        </button>
-                      ))}
-                    </div>
+                    <>
+                      {/* Search Input */}
+                      {collections.length > 5 && (
+                        <div className="relative mb-3">
+                          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                          <input
+                            type="text"
+                            placeholder="Search collections..."
+                            value={collectionSearchQuery}
+                            onChange={(e) => setCollectionSearchQuery(e.target.value)}
+                            className="w-full pl-9 pr-3 py-2 bg-background border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                          />
+                        </div>
+                      )}
+                      
+                      <div className="max-h-48 overflow-y-auto space-y-2">
+                        {collections
+                          .filter(collection => 
+                            collection.title.toLowerCase().includes(collectionSearchQuery.toLowerCase())
+                          )
+                          .map((collection) => (
+                            <button
+                              key={collection.ratingKey}
+                              onClick={() => toggleCollection(collection.ratingKey)}
+                              className={cn(
+                                "w-full p-3 rounded-lg text-left transition-all duration-200 flex items-center gap-3",
+                                selectedCollections.includes(collection.ratingKey)
+                                  ? "bg-primary/20 border border-primary"
+                                  : "bg-secondary hover:bg-secondary/80"
+                              )}
+                            >
+                              {collection.thumb ? (
+                                <img 
+                                  src={collection.thumb} 
+                                  alt={collection.title}
+                                  className="w-10 h-10 rounded object-cover"
+                                />
+                              ) : (
+                                <div className="w-10 h-10 rounded bg-muted flex items-center justify-center">
+                                  <FolderOpen size={16} className="text-muted-foreground" />
+                                </div>
+                              )}
+                              <div className="flex-1 min-w-0">
+                                <p className="font-medium text-foreground truncate">{collection.title}</p>
+                                <p className="text-xs text-muted-foreground">{collection.childCount} items</p>
+                              </div>
+                              {selectedCollections.includes(collection.ratingKey) && (
+                                <Check size={18} className="text-primary flex-shrink-0" />
+                              )}
+                            </button>
+                          ))}
+                        {collections.filter(c => 
+                          c.title.toLowerCase().includes(collectionSearchQuery.toLowerCase())
+                        ).length === 0 && (
+                          <p className="text-center text-muted-foreground py-4 text-sm">
+                            No collections found
+                          </p>
+                        )}
+                      </div>
+                    </>
                   )}
                 </motion.div>
               )}
