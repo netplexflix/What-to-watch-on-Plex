@@ -1,3 +1,4 @@
+//file: /src/components/TriStateButton.tsx
 import { Check, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { SelectionState } from "@/types/session";
@@ -9,6 +10,8 @@ interface TriStateButtonProps {
   icon?: React.ReactNode;
   description?: string;
   variant?: "chip" | "card";
+  size?: "default" | "sm";
+  className?: string;
 }
 
 export const TriStateButton = ({
@@ -18,7 +21,11 @@ export const TriStateButton = ({
   icon,
   description,
   variant = "chip",
+  size = "default",
+  className,
 }: TriStateButtonProps) => {
+  const isSmall = size === "sm";
+
   const getStateClasses = () => {
     if (state === true) {
       return "bg-green-600 text-white border-green-600";
@@ -30,11 +37,12 @@ export const TriStateButton = ({
   };
 
   const getIndicator = () => {
+    const iconSize = isSmall ? 12 : 14;
     if (state === true) {
-      return <Check size={14} className="shrink-0" />;
+      return <Check size={iconSize} className="shrink-0" />;
     }
     if (state === false) {
-      return <X size={14} className="shrink-0" />;
+      return <X size={iconSize} className="shrink-0" />;
     }
     return null;
   };
@@ -44,18 +52,20 @@ export const TriStateButton = ({
       <button
         onClick={onToggle}
         className={cn(
-          "flex flex-col items-start p-4 rounded-xl transition-all duration-200 border-2",
+          "flex flex-col items-start rounded-xl transition-all duration-200 border-2",
+          isSmall ? "p-2.5" : "p-4",
           getStateClasses(),
-          state === true && "glow-primary"
+          state === true && "glow-primary",
+          className
         )}
       >
-        <div className="flex items-center gap-2 mb-2">
+        <div className={cn("flex items-center gap-2", isSmall ? "mb-1" : "mb-2")}>
           {icon}
           {getIndicator()}
         </div>
-        <span className="font-medium">{label}</span>
+        <span className={cn("font-medium", isSmall ? "text-xs" : "text-sm")}>{label}</span>
         {description && (
-          <span className="text-xs opacity-80">{description}</span>
+          <span className={cn("opacity-80", isSmall ? "text-[10px]" : "text-xs")}>{description}</span>
         )}
       </button>
     );
@@ -65,8 +75,10 @@ export const TriStateButton = ({
     <button
       onClick={onToggle}
       className={cn(
-        "inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-medium transition-all duration-200 border-2",
-        getStateClasses()
+        "inline-flex items-center gap-1.5 rounded-full font-medium transition-all duration-200 border-2",
+        isSmall ? "px-3 py-1.5 text-xs" : "px-4 py-2 text-sm",
+        getStateClasses(),
+        className
       )}
     >
       {getIndicator()}

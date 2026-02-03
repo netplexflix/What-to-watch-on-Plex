@@ -36,12 +36,14 @@ const GENRES = [
 ];
 
 const ERAS = [
-  { value: "recent", label: "Very Recent", description: "Last 2 years" },
-  { value: "2020s", label: "2020s", description: "2020-present" },
-  { value: "2010s", label: "2010s", description: "2010-2019" },
-  { value: "2000s", label: "2000s", description: "2000-2009" },
-  { value: "90s", label: "90s", description: "1990-1999" },
-  { value: "classic", label: "Classic", description: "Before 1990" },
+  { value: "6months", label: "Past 6 months" },
+  { value: "2years", label: "Past 2 years" },
+  { value: "2020s", label: "2020s" },
+  { value: "2010s", label: "2010s" },
+  { value: "2000s", label: "2000s" },
+  { value: "90s", label: "90s" },
+  { value: "80s", label: "80s" },
+  { value: "classic", label: "Classic" },
 ];
 
 type TriStateMap = Record<string, SelectionState>;
@@ -374,37 +376,36 @@ export const QuestionFlow = ({ onComplete, languages: propLanguages, className }
                   setEraStates({});
                 }}
                 className={cn(
-                  "w-full p-4 rounded-xl transition-all duration-200 text-left border-2 flex items-center gap-3",
+                  "w-full p-3 rounded-xl transition-all duration-200 text-left border-2 flex items-center gap-3",
                   dontMindEras
                     ? "glass-card border-primary glow-primary"
                     : "glass-card border-transparent hover:border-muted-foreground/30"
                 )}
               >
                 <div className={cn(
-                  "w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all",
+                  "w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all",
                   dontMindEras 
                     ? "bg-primary border-primary" 
                     : "border-muted-foreground"
                 )}>
-                  {dontMindEras && <Check size={14} className="text-primary-foreground" />}
+                  {dontMindEras && <Check size={12} className="text-primary-foreground" />}
                 </div>
                 <div>
-                  <span className="font-medium text-foreground">I don't mind</span>
+                  <span className="font-medium text-foreground text-sm">I don't mind</span>
                   <p className="text-xs text-muted-foreground">Show from any era</p>
                 </div>
               </button>
               
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-2">
                 {ERAS.map((era) => (
                   <TriStateButton
                     key={era.value}
                     label={era.label}
-                    description={era.description}
                     state={dontMindEras ? undefined : eraStates[era.value]}
                     onToggle={() => handleEraToggle(era.value)}
                     icon={
                       <Calendar
-                        size={20}
+                        size={16}
                         className={cn(
                           !dontMindEras && eraStates[era.value] === true
                             ? "text-white"
@@ -415,6 +416,7 @@ export const QuestionFlow = ({ onComplete, languages: propLanguages, className }
                       />
                     }
                     variant="card"
+                    size="sm"
                   />
                 ))}
               </div>

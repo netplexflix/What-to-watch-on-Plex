@@ -110,13 +110,21 @@ function shuffleWithSeed<T>(array: T[], seed: number): T[] {
 
 function matchesEra(year: number, era: string): boolean {
   const currentYear = new Date().getFullYear();
+  const currentDate = new Date();
+  const sixMonthsAgo = new Date(currentDate);
+  sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+  const sixMonthsAgoYear = sixMonthsAgo.getFullYear();
+  
   switch (era) {
-    case 'recent': return year >= currentYear - 2;
+    case '6months': return year >= sixMonthsAgoYear && year <= currentYear;
+    case '2years': return year >= currentYear - 2;
+    case 'recent': return year >= currentYear - 2; // Keep for backwards compatibility
     case '2020s': return year >= 2020;
     case '2010s': return year >= 2010 && year < 2020;
     case '2000s': return year >= 2000 && year < 2010;
     case '90s': return year >= 1990 && year < 2000;
-    case 'classic': return year < 1990;
+    case '80s': return year >= 1980 && year < 1990;
+    case 'classic': return year < 1980;
     default: return false;
   }
 }
