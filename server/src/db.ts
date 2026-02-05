@@ -95,6 +95,14 @@ export function initDatabase(dataPath: string): DatabaseType {
       updated_at TEXT DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS media_labels_cache (
+      id TEXT PRIMARY KEY,
+      library_keys TEXT NOT NULL UNIQUE,
+      labels TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_sessions_code ON sessions(code);
     CREATE INDEX IF NOT EXISTS idx_participants_session ON session_participants(session_id);
     CREATE INDEX IF NOT EXISTS idx_votes_session ON votes(session_id);
@@ -121,6 +129,16 @@ function runMigrations(db: DatabaseType) {
   if (!sessionColumnNames.includes('timer_end_at')) {
     console.log('[DB Migration] Adding timer_end_at column to sessions');
     db.exec('ALTER TABLE sessions ADD COLUMN timer_end_at TEXT DEFAULT NULL');
+  }
+
+  if (!sessionColumnNames.includes('use_watchlist')) {
+    console.log('[DB Migration] Adding use_watchlist column to sessions');
+    db.exec('ALTER TABLE sessions ADD COLUMN use_watchlist INTEGER DEFAULT 0');
+  }
+
+  if (!sessionColumnNames.includes('host_plex_token')) {
+    console.log('[DB Migration] Adding host_plex_token column to sessions');
+    db.exec('ALTER TABLE sessions ADD COLUMN host_plex_token TEXT DEFAULT NULL');
   }
 
   // Create final_votes table if not exists
@@ -154,6 +172,17 @@ function runMigrations(db: DatabaseType) {
     );
     
     CREATE INDEX IF NOT EXISTS idx_session_history_completed ON session_history(completed_at);
+  `);
+
+  // Create media_labels_cache table if not exists
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS media_labels_cache (
+      id TEXT PRIMARY KEY,
+      library_keys TEXT NOT NULL UNIQUE,
+      labels TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
   `);
 
   console.log('[DB] Migrations complete');

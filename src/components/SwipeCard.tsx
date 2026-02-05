@@ -12,9 +12,11 @@ interface SwipeCardProps {
   onSwipe: (direction: "left" | "right") => void;
   onUndo?: () => void;
   className?: string;
+  sessionMediaType?: 'movies' | 'shows' | 'both';
+  ratingDisplay?: 'critic' | 'audience' | 'both';
 }
 
-export const SwipeCard = ({ item, onSwipe, onUndo, className }: SwipeCardProps) => {
+export const SwipeCard = ({ item, onSwipe, onUndo, className, sessionMediaType, ratingDisplay = 'critic' }: SwipeCardProps) => {
   const [isFlipped, setIsFlipped] = useState(false);
   const [exitDirection, setExitDirection] = useState<"left" | "right" | null>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -115,6 +117,54 @@ export const SwipeCard = ({ item, onSwipe, onUndo, className }: SwipeCardProps) 
     return `${minutes}m`;
   };
 
+  const renderRating = () => {
+    const showCritic = ratingDisplay === 'critic' || ratingDisplay === 'both';
+    const showAudience = ratingDisplay === 'audience' || ratingDisplay === 'both';
+    
+    const ratings = [];
+    
+    if (showCritic && item.rating) {
+      ratings.push(
+        <div key="critic" className="flex items-center gap-2 text-accent">
+          <Star size={14} fill="currentColor" />
+          <span>{item.rating.toFixed(1)}</span>
+          {ratingDisplay === 'both' && <span className="text-xs text-muted-foreground">(Critic)</span>}
+        </div>
+      );
+    }
+    
+    if (showAudience && item.audienceRating) {
+      ratings.push(
+        <div key="audience" className="flex items-center gap-2 text-primary">
+          <Star size={14} fill="currentColor" />
+          <span>{item.audienceRating.toFixed(1)}</span>
+          {ratingDisplay === 'both' && <span className="text-xs text-muted-foreground">(Audience)</span>}
+        </div>
+      );
+    }
+    
+    // Fallback if no ratings available for selected display mode
+    if (ratings.length === 0) {
+      if (item.rating) {
+        ratings.push(
+          <div key="fallback-critic" className="flex items-center gap-2 text-accent">
+            <Star size={14} fill="currentColor" />
+            <span>{item.rating.toFixed(1)}</span>
+          </div>
+        );
+      } else if (item.audienceRating) {
+        ratings.push(
+          <div key="fallback-audience" className="flex items-center gap-2 text-primary">
+            <Star size={14} fill="currentColor" />
+            <span>{item.audienceRating.toFixed(1)}</span>
+          </div>
+        );
+      }
+    }
+    
+    return ratings;
+  };
+
   return (
     <div className={cn("relative w-full max-w-[340px] sm:max-w-[400px] md:max-w-[450px] mx-auto", className)}>
       <div ref={constraintsRef} className="relative perspective-1000">
@@ -202,11 +252,13 @@ export const SwipeCard = ({ item, onSwipe, onUndo, className }: SwipeCardProps) 
                 <h3 className="text-xl font-bold text-foreground">{item.title}</h3>
                 <p className="text-muted-foreground">{item.year}</p>
               </div>
-              <div className="absolute top-4 left-4">
-                <span className="px-2 py-1 text-xs font-medium bg-secondary/80 backdrop-blur rounded-full text-secondary-foreground">
-                  {item.type === "movie" ? "Movie" : "TV Show"}
-                </span>
-              </div>
+              {sessionMediaType === 'both' && (
+                <div className="absolute top-4 left-4">
+                  <span className="px-2 py-1 text-xs font-medium bg-secondary/80 backdrop-blur rounded-full text-secondary-foreground">
+                    {item.type === "movie" ? "Movie" : "TV Show"}
+                  </span>
+                </div>
+              )}
               {/* Tap hint */}
               <div className="absolute bottom-16 left-0 right-0 text-center">
                 <span className="text-xs text-muted-foreground/70">Tap for details</span>
@@ -242,12 +294,7 @@ export const SwipeCard = ({ item, onSwipe, onUndo, className }: SwipeCardProps) 
                     <Clock size={14} />
                     <span>{formatDuration(item.duration)}</span>
                   </div>
-                  {item.rating && (
-                    <div className="flex items-center gap-2 text-accent">
-                      <Star size={14} fill="currentColor" />
-                      <span>{item.rating.toFixed(1)}</span>
-                    </div>
-                  )}
+                  {renderRating()}
                   {item.contentRating && (
                     <div className="flex items-center gap-2 text-muted-foreground">
                       <Users size={14} />

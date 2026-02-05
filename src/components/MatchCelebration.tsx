@@ -1,10 +1,13 @@
 // File: src/components/MatchCelebration.tsx
 import { useEffect, useState, useRef, ReactNode } from "react";
 import { motion } from "framer-motion";
-import { PartyPopper, Play, Clock, Star, Calendar, Users, Popcorn, Globe } from "lucide-react";
+import { PartyPopper, Play, Clock, Star, Calendar, Users, Popcorn, Globe, ListPlus, ListCheck, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useHaptics } from "@/hooks/useHaptics";
+import { plexApi, sessionsApi } from "@/lib/api";
+import { getLocalSession } from "@/lib/sessionStore";
+import { toast } from "sonner";
 import type { PlexItem } from "@/types/session";
 
 interface MatchCelebrationProps {
@@ -12,6 +15,7 @@ interface MatchCelebrationProps {
   onWatchNow?: () => void;
   className?: string;
   children?: ReactNode;
+  ratingDisplay?: 'critic' | 'audience' | 'both';
 }
 
 const formatDuration = (ms: number): string => {
@@ -32,11 +36,55 @@ export const MatchCelebration = ({
   onWatchNow,
   className,
   children,
+  ratingDisplay = 'critic',
 }: MatchCelebrationProps) => {
   const [confetti, setConfetti] = useState<{ id: number; color: string; left: number; delay: number }[]>([]);
   const [isFlipped, setIsFlipped] = useState(false);
+  const [inWatchlist, setInWatchlist] = useState(false);
+  const [isAddingToWatchlist, setIsAddingToWatchlist] = useState(false);
+  const [isCheckingWatchlist, setIsCheckingWatchlist] = useState(false);
+  const [plexToken, setPlexToken] = useState<string | null>(null);
+  const [hasCheckedToken, setHasCheckedToken] = useState(false);
   const haptics = useHaptics();
   const hasTriggeredHaptic = useRef(false);
+  const localSession = getLocalSession();
+
+  // Get the participant's plex token
+  useEffect(() => {
+    const checkPlexToken = async () => {
+      if (!localSession?.sessionId || !localSession?.participantId) {
+        setHasCheckedToken(true);
+        return;
+      }
+      
+      try {
+        const { data, error } = await sessionsApi.getParticipants(localSession.sessionId);
+        if (error) {
+          console.error('[MatchCelebration] Error getting participants:', error);
+          setHasCheckedToken(true);
+          return;
+        }
+        
+        if (data?.participants) {
+          const currentParticipant = data.participants.find(
+            (p: any) => p.id === localSession.participantId
+          );
+          if (currentParticipant?.plex_token) {
+            console.log('[MatchCelebration] Found plex token for participant');
+            setPlexToken(currentParticipant.plex_token);
+          } else {
+            console.log('[MatchCelebration] No plex token for participant (guest user)');
+          }
+        }
+      } catch (err) {
+        console.error('[MatchCelebration] Error getting participant info:', err);
+      } finally {
+        setHasCheckedToken(true);
+      }
+    };
+    
+    checkPlexToken();
+  }, [localSession?.sessionId, localSession?.participantId]);
 
   useEffect(() => {
     if (!hasTriggeredHaptic.current) {
@@ -57,12 +105,110 @@ export const MatchCelebration = ({
         navigator.vibrate(0);
       }
     };
-  }, []);
+  }, [haptics]);
+
+  // Check if item is in watchlist when we have a plex token
+  useEffect(() => {
+    if (plexToken && item.ratingKey && hasCheckedToken) {
+      checkWatchlistStatus();
+    }
+  }, [plexToken, item.ratingKey, hasCheckedToken]);
+
+  const checkWatchlistStatus = async () => {
+    if (!plexToken) return;
+    
+    setIsCheckingWatchlist(true);
+    try {
+      const { data, error } = await plexApi.checkWatchlist(plexToken, item.ratingKey);
+      if (error) {
+        console.error('[MatchCelebration] Error checking watchlist:', error);
+      } else if (data) {
+        setInWatchlist(data.inWatchlist);
+        console.log('[MatchCelebration] Watchlist status:', data.inWatchlist);
+      }
+    } catch (err) {
+      console.error('[MatchCelebration] Error checking watchlist:', err);
+    } finally {
+      setIsCheckingWatchlist(false);
+    }
+  };
+
+  const handleAddToWatchlist = async () => {
+    if (!plexToken || inWatchlist || isAddingToWatchlist) return;
+    
+    setIsAddingToWatchlist(true);
+    haptics.medium();
+    
+    try {
+      const { error } = await plexApi.addToWatchlist(plexToken, item.ratingKey);
+      if (error) throw new Error(error);
+      
+      setInWatchlist(true);
+      haptics.success();
+      toast.success('Added to watchlist!');
+    } catch (err) {
+      haptics.error();
+      console.error('[MatchCelebration] Error adding to watchlist:', err);
+      toast.error('Failed to add to watchlist');
+    } finally {
+      setIsAddingToWatchlist(false);
+    }
+  };
 
   const handleCardClick = () => {
     haptics.selection();
     setIsFlipped(prev => !prev);
   };
+
+  const renderRating = () => {
+    const showCritic = ratingDisplay === 'critic' || ratingDisplay === 'both';
+    const showAudience = ratingDisplay === 'audience' || ratingDisplay === 'both';
+    
+    const ratings = [];
+    
+    if (showCritic && item.rating) {
+      ratings.push(
+        <div key="critic" className="flex items-center gap-2 text-accent">
+          <Star size={14} fill="currentColor" />
+          <span>{item.rating.toFixed(1)}</span>
+          {ratingDisplay === 'both' && <span className="text-xs text-muted-foreground">(Critic)</span>}
+        </div>
+      );
+    }
+    
+    if (showAudience && item.audienceRating) {
+      ratings.push(
+        <div key="audience" className="flex items-center gap-2 text-primary">
+          <Star size={14} fill="currentColor" />
+          <span>{item.audienceRating.toFixed(1)}</span>
+          {ratingDisplay === 'both' && <span className="text-xs text-muted-foreground">(Audience)</span>}
+        </div>
+      );
+    }
+    
+    if (ratings.length === 0) {
+      if (item.rating) {
+        ratings.push(
+          <div key="fallback-critic" className="flex items-center gap-2 text-accent">
+            <Star size={14} fill="currentColor" />
+            <span>{item.rating.toFixed(1)}</span>
+          </div>
+        );
+      } else if (item.audienceRating) {
+        ratings.push(
+          <div key="fallback-audience" className="flex items-center gap-2 text-primary">
+            <Star size={14} fill="currentColor" />
+            <span>{item.audienceRating.toFixed(1)}</span>
+          </div>
+        );
+      }
+    }
+    
+    return ratings;
+  };
+
+  // Show watchlist button for Plex users (after we've checked for token)
+  const showWatchlistButton = hasCheckedToken && plexToken !== null;
 
   return (
     <div className={cn("relative flex flex-col items-center pt-4 pb-8 px-6 overflow-hidden", className)}>
@@ -130,6 +276,35 @@ export const MatchCelebration = ({
                       {item.type === "movie" ? "Movie" : "TV Show"}
                     </span>
                   </div>
+                  
+                  {/* Watchlist button - only show for Plex users */}
+                  {showWatchlistButton && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (!inWatchlist && !isAddingToWatchlist && !isCheckingWatchlist) {
+                          handleAddToWatchlist();
+                        }
+                      }}
+                      disabled={isAddingToWatchlist || isCheckingWatchlist || inWatchlist}
+                      className={cn(
+                        "absolute top-4 right-4 w-10 h-10 rounded-full flex items-center justify-center transition-all",
+                        inWatchlist 
+                          ? "bg-primary text-primary-foreground" 
+                          : "bg-secondary/80 backdrop-blur text-secondary-foreground hover:bg-secondary"
+                      )}
+                      title={inWatchlist ? "In your watchlist" : "Add to watchlist"}
+                    >
+                      {isAddingToWatchlist || isCheckingWatchlist ? (
+                        <Loader2 size={20} className="animate-spin" />
+                      ) : inWatchlist ? (
+                        <ListCheck size={20} />
+                      ) : (
+                        <ListPlus size={20} />
+                      )}
+                    </button>
+                  )}
+                  
                   {/* Tap hint */}
                   <div className="absolute bottom-16 left-0 right-0 text-center">
                     <span className="text-xs text-muted-foreground/70">Tap for details</span>
@@ -165,12 +340,7 @@ export const MatchCelebration = ({
                         <Clock size={14} />
                         <span>{formatDuration(item.duration)}</span>
                       </div>
-                      {item.rating && (
-                        <div className="flex items-center gap-2 text-accent">
-                          <Star size={14} fill="currentColor" />
-                          <span>{item.rating.toFixed(1)}</span>
-                        </div>
-                      )}
+                      {renderRating()}
                       {item.contentRating && (
                         <div className="flex items-center gap-2 text-muted-foreground">
                           <Users size={14} />

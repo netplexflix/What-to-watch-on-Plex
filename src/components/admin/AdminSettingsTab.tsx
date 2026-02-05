@@ -1,8 +1,10 @@
 // File: src/components/admin/AdminSettingsTab.tsx
 import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
-import { Loader2, Save, Shuffle, ListOrdered, Hash, FolderOpen, Upload, Trash2, Image } from "lucide-react";
+import { Loader2, Save, Shuffle, ListOrdered, Hash, Upload, Trash2, Image, ExternalLink, Tag, X, Plus, Star, QrCode } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { adminApi } from "@/lib/api";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -13,6 +15,12 @@ interface SessionSettings {
   max_choices: number;
   max_exclusions: number;
   enable_collections: boolean;
+  enable_plex_button: boolean;
+  enable_label_restrictions: boolean;
+  label_restriction_mode: "include" | "exclude";
+  restricted_labels: string[];
+  rating_display: "critic" | "audience" | "both";
+  enable_lobby_qr: boolean;
 }
 
 const DEFAULT_SETTINGS: SessionSettings = {
@@ -20,6 +28,12 @@ const DEFAULT_SETTINGS: SessionSettings = {
   max_choices: 3,
   max_exclusions: 3,
   enable_collections: false,
+  enable_plex_button: false,
+  enable_label_restrictions: false,
+  label_restriction_mode: "include",
+  restricted_labels: [],
+  rating_display: "critic",
+  enable_lobby_qr: false,
 };
 
 export const AdminSettingsTab = () => {
@@ -30,6 +44,7 @@ export const AdminSettingsTab = () => {
   const [isSaving, setIsSaving] = useState(false);
   const [customLogo, setCustomLogo] = useState<string | null>(null);
   const [isUploadingLogo, setIsUploadingLogo] = useState(false);
+  const [newLabel, setNewLabel] = useState("");
 
   useEffect(() => {
     loadSettings();
@@ -48,6 +63,12 @@ export const AdminSettingsTab = () => {
           max_choices: data.settings.max_choices ?? 3,
           max_exclusions: data.settings.max_exclusions ?? 3,
           enable_collections: data.settings.enable_collections ?? false,
+          enable_plex_button: data.settings.enable_plex_button ?? false,
+          enable_label_restrictions: data.settings.enable_label_restrictions ?? false,
+          label_restriction_mode: data.settings.label_restriction_mode || "include",
+          restricted_labels: data.settings.restricted_labels || [],
+          rating_display: data.settings.rating_display || "critic",
+          enable_lobby_qr: data.settings.enable_lobby_qr ?? false,
         });
       }
     } catch (err) {
@@ -170,6 +191,31 @@ export const AdminSettingsTab = () => {
     }
   };
 
+  const handleAddLabel = () => {
+    const trimmedLabel = newLabel.trim();
+    if (!trimmedLabel) return;
+    
+    if (settings.restricted_labels.includes(trimmedLabel)) {
+      toast.error("Label already added");
+      return;
+    }
+    
+    haptics.selection();
+    setSettings(s => ({
+      ...s,
+      restricted_labels: [...s.restricted_labels, trimmedLabel]
+    }));
+    setNewLabel("");
+  };
+
+  const handleRemoveLabel = (label: string) => {
+    haptics.selection();
+    setSettings(s => ({
+      ...s,
+      restricted_labels: s.restricted_labels.filter(l => l !== label)
+    }));
+  };
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -247,6 +293,7 @@ export const AdminSettingsTab = () => {
           </div>
         )}
       </motion.div>
+
 
       {/* Max Preferences */}
       <motion.div
@@ -389,56 +436,261 @@ export const AdminSettingsTab = () => {
         </div>
       </motion.div>
 
-      {/* Enable Collections */}
+      {/* Collections Toggle */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.3 }}
+        className="glass-card rounded-xl p-4"
+      >
+        <div className="flex items-center justify-between">
+          <div className="flex-1">
+            <div className="flex items-center gap-2">
+              <Tag size={20} className="text-primary" />
+              <h2 className="font-semibold text-foreground">Collections</h2>
+            </div>
+            <p className="text-sm text-muted-foreground mt-1">
+              Allow session hosts to filter by Plex collections
+            </p>
+          </div>
+          <Switch
+            checked={settings.enable_collections}
+            onCheckedChange={(checked) => {
+              haptics.selection();
+              setSettings(s => ({ ...s, enable_collections: checked }));
+            }}
+          />
+        </div>
+      </motion.div>
+
+      {/* Open in Plex Button Toggle */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.4 }}
+        className="glass-card rounded-xl p-4"
+      >
+        <div className="flex items-center justify-between">
+          <div className="flex-1">
+            <div className="flex items-center gap-2">
+              <ExternalLink size={20} className="text-primary" />
+              <h2 className="font-semibold text-foreground">Open in Plex Button</h2>
+            </div>
+            <p className="text-sm text-muted-foreground mt-1">
+              Show a button on the results page to open the winning item in Plex
+            </p>
+          </div>
+          <Switch
+            checked={settings.enable_plex_button}
+            onCheckedChange={(checked) => {
+              haptics.selection();
+              setSettings(s => ({ ...s, enable_plex_button: checked }));
+            }}
+          />
+        </div>
+      </motion.div>
+
+      {/* Lobby QR Code Toggle */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.05 }}
+        className="glass-card rounded-xl p-4"
+      >
+        <div className="flex items-center justify-between">
+          <div className="flex-1">
+            <div className="flex items-center gap-2">
+              <QrCode size={20} className="text-primary" />
+              <h2 className="font-semibold text-foreground">Lobby QR Code</h2>
+            </div>
+            <p className="text-sm text-muted-foreground mt-1">
+              Display a QR code in the lobby for easy session joining
+            </p>
+          </div>
+          <Switch
+            checked={settings.enable_lobby_qr}
+            onCheckedChange={(checked) => {
+              haptics.selection();
+              setSettings(s => ({ ...s, enable_lobby_qr: checked }));
+            }}
+          />
+        </div>
+      </motion.div>
+
+      {/* Rating Display */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.45 }}
         className="glass-card rounded-xl p-4 space-y-4"
       >
         <div className="flex items-center gap-2">
-          <FolderOpen size={20} className="text-primary" />
-          <h2 className="font-semibold text-foreground">Collections</h2>
+          <Star size={20} className="text-primary" />
+          <h2 className="font-semibold text-foreground">Rating Display</h2>
         </div>
         <p className="text-sm text-muted-foreground">
-          Allow session hosts to filter by Plex collections
+          Choose which ratings to show on card details
         </p>
         
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-3 gap-2">
           <button
             onClick={() => {
               haptics.selection();
-              setSettings(s => ({ ...s, enable_collections: true }));
+              setSettings(s => ({ ...s, rating_display: "critic" }));
             }}
             className={cn(
-              "p-4 rounded-lg transition-all duration-200 flex flex-col items-center gap-2",
-              settings.enable_collections
+              "p-3 rounded-lg transition-all duration-200 flex flex-col items-center gap-1",
+              settings.rating_display === "critic"
                 ? "bg-primary/20 border-2 border-primary"
                 : "bg-secondary hover:bg-secondary/80 border-2 border-transparent"
             )}
           >
-            <FolderOpen size={24} className={settings.enable_collections ? "text-primary" : "text-muted-foreground"} />
-            <span className="font-medium text-foreground">Enabled</span>
-            <span className="text-xs text-muted-foreground text-center">Show collection picker</span>
+            <span className="font-medium text-foreground text-sm">Critic</span>
+            <span className="text-xs text-muted-foreground">IMDb/TMDB</span>
           </button>
           
           <button
             onClick={() => {
               haptics.selection();
-              setSettings(s => ({ ...s, enable_collections: false }));
+              setSettings(s => ({ ...s, rating_display: "audience" }));
             }}
             className={cn(
-              "p-4 rounded-lg transition-all duration-200 flex flex-col items-center gap-2",
-              !settings.enable_collections
+              "p-3 rounded-lg transition-all duration-200 flex flex-col items-center gap-1",
+              settings.rating_display === "audience"
                 ? "bg-primary/20 border-2 border-primary"
                 : "bg-secondary hover:bg-secondary/80 border-2 border-transparent"
             )}
           >
-            <FolderOpen size={24} className={!settings.enable_collections ? "text-primary" : "text-muted-foreground"} />
-            <span className="font-medium text-foreground">Disabled</span>
-            <span className="text-xs text-muted-foreground text-center">Use all library items</span>
+            <span className="font-medium text-foreground text-sm">Audience</span>
+            <span className="text-xs text-muted-foreground">User rating</span>
+          </button>
+          
+          <button
+            onClick={() => {
+              haptics.selection();
+              setSettings(s => ({ ...s, rating_display: "both" }));
+            }}
+            className={cn(
+              "p-3 rounded-lg transition-all duration-200 flex flex-col items-center gap-1",
+              settings.rating_display === "both"
+                ? "bg-primary/20 border-2 border-primary"
+                : "bg-secondary hover:bg-secondary/80 border-2 border-transparent"
+            )}
+          >
+            <span className="font-medium text-foreground text-sm">Both</span>
+            <span className="text-xs text-muted-foreground">Show all</span>
           </button>
         </div>
+      </motion.div>
+
+      {/* Label Restrictions */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.5 }}
+        className="glass-card rounded-xl p-4 space-y-4"
+      >
+        <div className="flex items-center justify-between">
+          <div className="flex-1">
+            <div className="flex items-center gap-2">
+              <Tag size={20} className="text-primary" />
+              <h2 className="font-semibold text-foreground">Label Restrictions</h2>
+            </div>
+            <p className="text-sm text-muted-foreground mt-1">
+              Filter media by Plex labels
+            </p>
+          </div>
+          <Switch
+            checked={settings.enable_label_restrictions}
+            onCheckedChange={(checked) => {
+              haptics.selection();
+              setSettings(s => ({ ...s, enable_label_restrictions: checked }));
+            }}
+          />
+        </div>
+
+        {settings.enable_label_restrictions && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            className="space-y-4 pt-2 border-t border-secondary"
+          >
+            {/* Mode selector */}
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">Mode:</span>
+              <select
+                value={settings.label_restriction_mode}
+                onChange={(e) => {
+                  haptics.selection();
+                  setSettings(s => ({ 
+                    ...s, 
+                    label_restriction_mode: e.target.value as "include" | "exclude" 
+                  }));
+                }}
+                className="bg-secondary border-none rounded-lg px-3 py-2 text-sm text-foreground focus:ring-2 focus:ring-primary"
+              >
+                <option value="include">Include only</option>
+                <option value="exclude">Exclude</option>
+              </select>
+            </div>
+
+            <p className="text-xs text-muted-foreground">
+              {settings.label_restriction_mode === "include" 
+                ? "Only items with these labels will be suggested"
+                : "Items with these labels will NOT be suggested"}
+            </p>
+
+            {/* Add label input */}
+            <div className="flex gap-2">
+              <Input
+                value={newLabel}
+                onChange={(e) => setNewLabel(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    handleAddLabel();
+                  }
+                }}
+                placeholder="Enter label name"
+                className="flex-1 bg-secondary border-secondary"
+              />
+              <Button
+                onClick={handleAddLabel}
+                disabled={!newLabel.trim()}
+                size="icon"
+                variant="outline"
+              >
+                <Plus size={18} />
+              </Button>
+            </div>
+
+            {/* Labels list */}
+            {settings.restricted_labels.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {settings.restricted_labels.map((label) => (
+                  <div
+                    key={label}
+                    className="flex items-center gap-1 px-3 py-1 bg-secondary rounded-full text-sm"
+                  >
+                    <span className="text-foreground">{label}</span>
+                    <button
+                      onClick={() => handleRemoveLabel(label)}
+                      className="text-muted-foreground hover:text-destructive transition-colors"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {settings.restricted_labels.length === 0 && (
+              <p className="text-sm text-muted-foreground italic">
+                No labels added yet
+              </p>
+            )}
+          </motion.div>
+        )}
       </motion.div>
 
       {/* Save Button */}
