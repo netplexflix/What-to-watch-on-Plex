@@ -19,7 +19,8 @@ Self hosted with Docker.
 Main Features:
 
 - Modern and user friendly UI.
-- Quickly create or join a lobby as `guest`, or `log in with Plex` to filter out already watched items and integrate Watchlist.
+- Quickly create or join a lobby as `guest`, or `log in with Plex` to filter out already watched items and integrate `Watchlist`.
+- Easy lobby joining via invite link or `QR code`.
 - Swipe with one or more friends.
 - Choose which libraries from your Plex server to include. Supports both `Movies` and `TV Shows`.
 - Optionally filter suggestions by `Collections`.<br> Want to decide on which Christmas movie to watch? Select your Christmas collection and start a session!
@@ -33,6 +34,7 @@ Main Features:
 - `Classic` or `Timed` swipe sessions:
   - `Classic`: Swipe until you have a match liked by everyone.
   - `Timed`: Swipe for chosen amount of time and vote for the best matches. Includes a tie breaker animation.
+- Installable as PWA 
 
 ### Prerequisites
 - Docker and Docker Compose installed.

@@ -8,12 +8,12 @@ import { Logo } from "@/components/Logo";
 import { RouletteWinner } from "@/components/RouletteWinner";
 import { MatchCelebration } from "@/components/MatchCelebration";
 import { PlaybackControl } from "@/components/PlaybackControl";
+import { FlippableCard } from "@/components/FlippableCard";
 import { sessionsApi, adminApi } from "@/lib/api";
 import { wsClient } from "@/lib/websocket";
 import { getLocalSession, clearLocalSession } from "@/lib/sessionStore";
 import { toast } from "sonner";
 import { useHaptics } from "@/hooks/useHaptics";
-import { cn } from "@/lib/utils";
 import type { PlexItem } from "@/types/session";
 
 const transformToPlexItem = (item: any): PlexItem => ({
@@ -246,7 +246,7 @@ const TimedResults = () => {
         let userHasVoted = false;
         
         try {
-          const votesResult = await sessionsApi.getFinalVotes(session.id);
+          const votesResult = await sessionsApi.getFinalVotes(sessionId);
 
           if (votesResult.data) {
             setVotingStatus({ 
@@ -341,7 +341,6 @@ const TimedResults = () => {
 
   const handleSelectItem = (itemKey: string) => {
     if (hasVoted) return;
-    haptics.selection();
     setSelectedItem(itemKey);
   };
 
@@ -536,6 +535,9 @@ const TimedResults = () => {
               ? `${matches.length} match${matches.length !== 1 ? 'es' : ''} found! Vote for your favorite.`
               : "No perfect matches, but here are the most liked items."}
           </p>
+          <p className="text-xs text-muted-foreground/70 mt-1">
+            Double tap for info
+          </p>
         </motion.div>
 
         <div className="glass-card rounded-xl p-3 mb-4 flex items-center justify-center gap-4">
@@ -553,44 +555,15 @@ const TimedResults = () => {
 
         <div className="grid grid-cols-2 gap-3 mb-4 max-w-sm mx-auto w-full flex-1 content-start">
           {itemsToShow.slice(0, 6).map((item, index) => (
-            <motion.button
+            <FlippableCard
               key={item.ratingKey}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: index * 0.05 }}
-              onClick={() => handleSelectItem(item.ratingKey)}
-              disabled={hasVoted}
-              className={cn(
-                "relative rounded-xl overflow-hidden aspect-[2/3] transition-all duration-200",
-                selectedItem === item.ratingKey 
-                  ? "ring-4 ring-primary ring-offset-2 ring-offset-background scale-[1.02]" 
-                  : "hover:scale-[1.01]",
-                hasVoted && selectedItem !== item.ratingKey && "opacity-40"
-              )}
-            >
-              <img
-                src={item.thumb}
-                alt={item.title}
-                className="w-full h-full object-cover"
-                onError={(e) => {
-                  (e.target as HTMLImageElement).src = "/placeholder.svg";
-                }}
-              />
-              <div className="absolute inset-0 bg-gradient-to-t from-background/90 via-transparent to-transparent" />
-              <div className="absolute bottom-0 left-0 right-0 p-2">
-                <p className="font-medium text-foreground text-xs truncate">{item.title}</p>
-                <p className="text-[10px] text-muted-foreground">{item.year}</p>
-              </div>
-              {selectedItem === item.ratingKey && (
-                <motion.div 
-                  initial={{ scale: 0 }}
-                  animate={{ scale: 1 }}
-                  className="absolute top-2 right-2 w-7 h-7 bg-primary rounded-full flex items-center justify-center"
-                >
-                  <Check size={16} className="text-primary-foreground" />
-                </motion.div>
-              )}
-            </motion.button>
+              item={item}
+              isSelected={selectedItem === item.ratingKey}
+              isDisabled={hasVoted}
+              onSelect={handleSelectItem}
+              animationDelay={index * 0.05}
+              ratingDisplay={ratingDisplay}
+            />
           ))}
         </div>
 
