@@ -36,11 +36,7 @@ jobs:
           images: |
             netplexflix/wtwp
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value={{tag}}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest
           flavor: |
             latest=false
 
