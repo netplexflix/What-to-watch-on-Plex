@@ -21,13 +21,83 @@ export const PlexLogin = ({ onLogin, onSkip }: PlexLoginProps) => {
   const [pinId, setPinId] = useState<number | null>(null);
   const pollIntervalRef = useRef<number | null>(null);
 
+  // returning from OAuth redirect on mount?
   useEffect(() => {
+    const checkRedirectReturn = async () => {
+      const storedPinId = sessionStorage.getItem('plexOAuthPinId');
+      if (storedPinId) {
+        sessionStorage.removeItem('plexOAuthPinId');
+        setIsLoading(true);
+        
+        try {
+          const { data: checkData, error: checkError } = await plexApi.checkOAuthPin(parseInt(storedPinId));
+          
+          if (checkError) {
+            console.error("Error checking pin on return:", checkError);
+            setIsLoading(false);
+            return;
+          }
+
+          if (checkData?.authenticated && checkData.authToken && checkData.user) {
+            onLogin(checkData.authToken, checkData.user);
+          } else {
+            // Not authenticated yet, start polling
+            setPinId(parseInt(storedPinId));
+            startPolling(parseInt(storedPinId));
+          }
+        } catch (err) {
+          console.error("Error processing OAuth return:", err);
+          setIsLoading(false);
+        }
+      }
+    };
+
+    checkRedirectReturn();
+
     return () => {
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);
       }
     };
   }, []);
+
+  const startPolling = (pinIdToCheck: number) => {
+    // Clear any existing interval
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+    }
+
+    // poll for auth completion
+    pollIntervalRef.current = window.setInterval(async () => {
+      try {
+        const { data: checkData, error: checkError } = await plexApi.checkOAuthPin(pinIdToCheck);
+
+        if (checkError) {
+          console.error("Error checking pin:", checkError);
+          return;
+        }
+
+        if (checkData?.authenticated && checkData.authToken && checkData.user) {
+          if (pollIntervalRef.current) {
+            clearInterval(pollIntervalRef.current);
+          }
+          onLogin(checkData.authToken, checkData.user);
+        }
+      } catch (err) {
+        console.error("Error checking pin:", err);
+      }
+    }, 2000);
+
+    // Stop polling after 5 min
+    setTimeout(() => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        setIsLoading(false);
+        setAuthUrl(null);
+        setPinId(null);
+      }
+    }, 300000);
+  };
 
   const handlePlexLogin = async () => {
     setIsLoading(true);
@@ -41,36 +111,22 @@ export const PlexLogin = ({ onLogin, onSkip }: PlexLoginProps) => {
       setPinId(data.pinId);
       setAuthUrl(data.authUrl);
 
-      // Open Plex auth in new window
-      window.open(data.authUrl, "_blank", "width=600,height=700");
+      // Try to open popup
+      const popup = window.open(data.authUrl, "_blank", "width=600,height=700");
 
-      // Start polling for auth completion
-      pollIntervalRef.current = window.setInterval(async () => {
-        try {
-          const { data: checkData, error: checkError } = await plexApi.checkOAuthPin(data.pinId);
-
-          if (checkError) throw new Error(checkError);
-
-          if (checkData?.authenticated && checkData.authToken && checkData.user) {
-            if (pollIntervalRef.current) {
-              clearInterval(pollIntervalRef.current);
-            }
-            onLogin(checkData.authToken, checkData.user);
-          }
-        } catch (err) {
-          console.error("Error checking pin:", err);
-        }
-      }, 2000);
-
-      // Stop polling after 5 minutes
+      // Check if popup was blocked
       setTimeout(() => {
-        if (pollIntervalRef.current) {
-          clearInterval(pollIntervalRef.current);
-          setIsLoading(false);
-          setAuthUrl(null);
-          setPinId(null);
+        if (!popup || popup.closed || typeof popup.closed === 'undefined') {
+          console.warn("Popup was blocked or closed, using redirect method");
+          // Store pinId for when we return from redirect
+          sessionStorage.setItem('plexOAuthPinId', data.pinId.toString());
+          // Redirect to Plex auth
+          window.location.href = data.authUrl;
+        } else {
+          // Popup opened successfully, start polling
+          startPolling(data.pinId);
         }
-      }, 300000);
+      }, 100);
 
     } catch (err) {
       console.error("Error starting Plex login:", err);
@@ -85,6 +141,23 @@ export const PlexLogin = ({ onLogin, onSkip }: PlexLoginProps) => {
     setIsLoading(false);
     setAuthUrl(null);
     setPinId(null);
+  };
+
+  const handleOpenAgain = () => {
+    if (!authUrl) return;
+    
+    const popup = window.open(authUrl, "_blank", "width=600,height=700");
+    
+    // offer redirect
+    setTimeout(() => {
+      if (!popup || popup.closed || typeof popup.closed === 'undefined') {
+        // Store pinId and redirect
+        if (pinId) {
+          sessionStorage.setItem('plexOAuthPinId', pinId.toString());
+          window.location.href = authUrl;
+        }
+      }
+    }, 100);
   };
 
   if (authUrl) {
@@ -104,7 +177,7 @@ export const PlexLogin = ({ onLogin, onSkip }: PlexLoginProps) => {
           </p>
         </div>
         <div className="flex flex-col gap-3">
-          <Button variant="outline" onClick={() => window.open(authUrl, "_blank")} className="w-full">
+          <Button variant="outline" onClick={handleOpenAgain} className="w-full">
             <ExternalLink size={18} className="mr-2" />
             Open Login Page Again
           </Button>
