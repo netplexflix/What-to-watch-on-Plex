@@ -1,4 +1,4 @@
-// file: server/src/index.ts
+// File: server/src/index.ts
 import express from 'express';
 import cors from 'cors';
 import { createServer } from 'http';
@@ -9,7 +9,9 @@ import { initDatabase, getDb } from './db.js';
 import { adminRoutes } from './routes/admin.js';
 import { plexRoutes } from './routes/plex.js';
 import { sessionRoutes } from './routes/sessions.js';
+import { versionRoutes } from './routes/version.js';
 import { setupWebSocket } from './websocket.js';
+import { APP_VERSION } from './version.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -32,6 +34,7 @@ app.use(express.json({ limit: '50mb' }));
 app.use('/api/admin', adminRoutes);
 app.use('/api/plex', plexRoutes);
 app.use('/api/sessions', sessionRoutes);
+app.use('/api/version', versionRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -180,7 +183,7 @@ function scheduleAutoCacheRefresh() {
 // ============ START SERVER ============
 
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`What to Watch ${APP_VERSION} - Server running on port ${PORT}`);
   console.log(`Data directory: ${DATA_PATH}`);
   
   // Start the auto cache refresh scheduler

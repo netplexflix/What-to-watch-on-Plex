@@ -1,4 +1,4 @@
-//file: /src/pages/Admin.tsx
+// File: src/pages/Admin.tsx
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 import { AdminSettingsTab } from "@/components/admin/AdminSettingsTab";
 import { SessionHistoryTab } from "@/components/admin/SessionHistoryTab";
 import { CacheProgressIndicator } from "@/components/admin/CacheProgressIndicator";
+import { VersionInfo } from "@/components/admin/VersionInfo";
 import { hashPassword } from "@/lib/crypto";
 
 interface PlexLibrary {
@@ -31,15 +32,6 @@ interface LastCacheRefresh {
   error?: string;
   success?: boolean;
 }
-
-// replaced with /lib/crypto (devtest)
-//const hashPassword = async (password: string): Promise<string> => {
-//  const encoder = new TextEncoder();
-//  const data = encoder.encode(password);
-//  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-//  const hashArray = Array.from(new Uint8Array(hashBuffer));
-//  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
-//};
 
 const formatRelativeTime = (timestamp: string): string => {
   const date = new Date(timestamp);
@@ -522,6 +514,9 @@ const Admin = () => {
           <SessionHistoryTab />
         ) : (
           <>
+            {/* Version Info Card - Always show at top of Connection tab */}
+            <VersionInfo />
+
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
