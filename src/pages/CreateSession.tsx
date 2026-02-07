@@ -11,6 +11,7 @@ import { plexApi, sessionsApi } from "@/lib/api";
 import { saveLocalSession } from "@/lib/sessionStore";
 import { toast } from "sonner";
 import { useHaptics } from "@/hooks/useHaptics";
+import { usePlexOAuth } from "@/hooks/usePlexOAuth";
 import { cn } from "@/lib/utils";
 
 interface PlexUser {
@@ -25,28 +26,40 @@ const CreateSession = () => {
   const [displayName, setDisplayName] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [joinAsGuest, setJoinAsGuest] = useState(true);
-  const [mediaType, setMediaType] = useState<"movies" | "shows" | "both">("both");
-  const [sessionMode, setSessionMode] = useState<"classic" | "timed">("classic");
+  const [mediaType, setMediaType] = useState<"movies" | "shows" | "both">(
+    "both"
+  );
+  const [sessionMode, setSessionMode] = useState<"classic" | "timed">(
+    "classic"
+  );
   const [timedMinutes, setTimedMinutes] = useState(5);
   const [useWatchlist, setUseWatchlist] = useState(false);
   const [watchlistCount, setWatchlistCount] = useState<number | null>(null);
   const [isLoadingWatchlist, setIsLoadingWatchlist] = useState(false);
-  
-  // Plex OAuth state
-  const [plexLoading, setPlexLoading] = useState(false);
+
   const [plexUser, setPlexUser] = useState<PlexUser | null>(null);
   const [plexToken, setPlexToken] = useState<string | null>(null);
-  const pollIntervalRef = useRef<number | null>(null);
 
-  useEffect(() => {
-    return () => {
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current);
-      }
-    };
-  }, []);
+  const {
+    isLoading: plexLoading,
+    isWaitingForAuth,
+    initiateLogin: startPlexLogin,
+    cancel: cancelPlexLogin,
+    openAuthAgain,
+  } = usePlexOAuth({
+    onSuccess: (token, user) => {
+      setPlexUser(user);
+      setPlexToken(token);
+      setDisplayName(user.username || "");
+      setJoinAsGuest(false);
+      toast.success(`Signed in as ${user.username}!`);
+    },
+    onError: (error) => {
+      toast.error(error);
+      setJoinAsGuest(true);
+    },
+  });
 
-  // Load watchlist count when user logs in with Plex
   useEffect(() => {
     if (plexToken && !joinAsGuest) {
       loadWatchlistCount();
@@ -58,7 +71,7 @@ const CreateSession = () => {
 
   const loadWatchlistCount = async () => {
     if (!plexToken) return;
-    
+
     setIsLoadingWatchlist(true);
     try {
       const { data, error } = await plexApi.getWatchlist(plexToken);
@@ -66,84 +79,16 @@ const CreateSession = () => {
         console.error("Error loading watchlist:", error);
         setWatchlistCount(0);
       } else if (data) {
-        // Use matchedCount which is the number of watchlist items that exist in the local library
         setWatchlistCount(data.matchedCount ?? 0);
-        console.log(`[CreateSession] Watchlist loaded: ${data.watchlistCount} total, ${data.matchedCount} matched to library`);
+        console.log(
+          `[CreateSession] Watchlist loaded: ${data.watchlistCount} total, ${data.matchedCount} matched to library`
+        );
       }
     } catch (err) {
       console.error("Error loading watchlist:", err);
       setWatchlistCount(0);
     } finally {
       setIsLoadingWatchlist(false);
-    }
-  };
-
-  const handlePlexLogin = async () => {
-    setPlexLoading(true);
-    try {
-      const redirectUri = window.location.origin + window.location.pathname;
-      const { data, error } = await plexApi.createOAuthPin(redirectUri);
-
-      if (error) throw new Error(error);
-      if (!data) throw new Error("No data returned");
-
-      // Open Plex auth in new window
-      const authWindow = window.open(data.authUrl, "_blank", "width=600,height=700");
-
-      // Start polling for auth completion
-      pollIntervalRef.current = window.setInterval(async () => {
-        try {
-          const { data: checkData, error: checkError } = await plexApi.checkOAuthPin(data.pinId);
-
-          if (checkError) {
-            console.error("Error checking pin:", checkError);
-            return;
-          }
-
-          if (checkData?.authenticated && checkData.authToken && checkData.user) {
-            // Clear polling
-            if (pollIntervalRef.current) {
-              clearInterval(pollIntervalRef.current);
-              pollIntervalRef.current = null;
-            }
-            
-            // Update state
-            setPlexUser(checkData.user);
-            setPlexToken(checkData.authToken);
-            setDisplayName(checkData.user.username || "");
-            setJoinAsGuest(false);
-            setPlexLoading(false);
-            
-            // Close auth window if still open
-            if (authWindow && !authWindow.closed) {
-              authWindow.close();
-            }
-            
-            toast.success(`Signed in as ${checkData.user.username}!`);
-          }
-        } catch (err) {
-          console.error("Error checking pin:", err);
-        }
-      }, 2000);
-
-      // Stop polling after 5 minutes
-      setTimeout(() => {
-        if (pollIntervalRef.current) {
-          clearInterval(pollIntervalRef.current);
-          pollIntervalRef.current = null;
-          setPlexLoading(false);
-          // Reset to guest if auth didn't complete
-          if (!plexUser) {
-            setJoinAsGuest(true);
-          }
-        }
-      }, 300000);
-
-    } catch (err) {
-      console.error("Error starting Plex login:", err);
-      toast.error("Failed to start Plex login");
-      setPlexLoading(false);
-      setJoinAsGuest(true);
     }
   };
 
@@ -170,24 +115,21 @@ const CreateSession = () => {
         isGuest: joinAsGuest,
       };
 
-      // Only add plexToken if it exists
       if (plexToken) {
         createData.plexToken = plexToken;
       }
 
-      // Only add timedDuration if timed session mode is selected
       if (sessionMode === "timed") {
         createData.timedDuration = timedMinutes;
       }
 
-      // Add watchlist mode if selected and user has plex token
       if (useWatchlist && plexToken && watchlistCount && watchlistCount > 0) {
         createData.useWatchlist = true;
       }
 
-      console.log('[CreateSession] Creating session with data:', { 
-        ...createData, 
-        plexToken: createData.plexToken ? '[REDACTED]' : undefined 
+      console.log("[CreateSession] Creating session with data:", {
+        ...createData,
+        plexToken: createData.plexToken ? "[REDACTED]" : undefined,
       });
 
       const { data, error } = await sessionsApi.create(createData);
@@ -195,7 +137,6 @@ const CreateSession = () => {
       if (error) throw new Error(error);
       if (!data) throw new Error("No data returned");
 
-      // Save to local storage
       saveLocalSession({
         sessionId: data.session.id,
         sessionCode: data.session.code,
@@ -220,21 +161,14 @@ const CreateSession = () => {
     setPlexUser(null);
     setPlexToken(null);
     setUseWatchlist(false);
-    // Clear any ongoing polling
-    if (pollIntervalRef.current) {
-      clearInterval(pollIntervalRef.current);
-      pollIntervalRef.current = null;
-    }
-    setPlexLoading(false);
+    cancelPlexLogin();
   };
 
   const handlePlexSelect = () => {
     haptics.selection();
-    // Only start OAuth if not already authenticated
     if (!plexUser && !plexLoading) {
-      handlePlexLogin();
+      startPlexLogin();
     } else if (plexUser) {
-      // Already authenticated, just select it
       setJoinAsGuest(false);
     }
   };
@@ -246,24 +180,83 @@ const CreateSession = () => {
 
   const handleMinutesChange = (delta: number) => {
     haptics.selection();
-    setTimedMinutes(prev => Math.max(1, Math.min(60, prev + delta)));
+    setTimedMinutes((prev) => Math.max(1, Math.min(60, prev + delta)));
   };
 
-  // Determine the visual state of the Plex button
   const isPlexSelected = !joinAsGuest || plexLoading;
   const isPlexAuthenticated = !joinAsGuest && plexUser !== null;
+  const watchlistDisabled =
+    isLoadingWatchlist || watchlistCount === null || watchlistCount === 0;
 
-  // Determine if watchlist option should be disabled
-  const watchlistDisabled = isLoadingWatchlist || watchlistCount === null || watchlistCount === 0;
+  if (isWaitingForAuth) {
+    return (
+      <div className="min-h-screen flex flex-col relative overflow-hidden">
+        <div className="fixed inset-0 bg-background">
+          <div className="absolute inset-0 bg-gradient-to-br from-primary/5 via-transparent to-accent/5" />
+        </div>
+
+        <div className="relative z-10 p-4">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => {
+              cancelPlexLogin();
+              setJoinAsGuest(true);
+            }}
+            className="text-muted-foreground hover:text-foreground"
+          >
+            <ArrowLeft size={24} />
+          </Button>
+        </div>
+
+        <div className="flex-1 flex flex-col items-center justify-center px-6 relative z-10">
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="w-full max-w-md text-center space-y-6"
+          >
+            <div className="w-16 h-16 bg-primary/20 rounded-full flex items-center justify-center mx-auto">
+              <Loader2 className="animate-spin text-primary" size={32} />
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold text-foreground mb-2">
+                Complete Login in Browser
+              </h3>
+              <p className="text-muted-foreground text-sm">
+                A new window should have opened. Complete the login there.
+              </p>
+            </div>
+            <div className="flex flex-col gap-3">
+              <Button
+                variant="outline"
+                onClick={openAuthAgain}
+                className="w-full"
+              >
+                Open Login Page Again
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  cancelPlexLogin();
+                  setJoinAsGuest(true);
+                }}
+                className="w-full text-muted-foreground"
+              >
+                Cancel
+              </Button>
+            </div>
+          </motion.div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex flex-col relative overflow-hidden">
-      {/* Background */}
       <div className="fixed inset-0 bg-background">
         <div className="absolute inset-0 bg-gradient-to-br from-primary/5 via-transparent to-accent/5" />
       </div>
 
-      {/* Header */}
       <div className="relative z-10 p-4">
         <Button
           variant="ghost"
@@ -275,7 +268,6 @@ const CreateSession = () => {
         </Button>
       </div>
 
-      {/* Content */}
       <div className="flex-1 flex flex-col items-center px-6 relative z-10 pb-8 overflow-y-auto">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -294,7 +286,6 @@ const CreateSession = () => {
           </p>
 
           <div className="space-y-5">
-            {/* Name input */}
             <div className="space-y-2">
               <label className="text-sm font-medium text-foreground">
                 Your Display Name
@@ -313,7 +304,6 @@ const CreateSession = () => {
               </div>
             </div>
 
-            {/* Join type selection */}
             <div className="space-y-3">
               <label className="text-sm font-medium text-foreground">
                 How do you want to join?
@@ -336,7 +326,9 @@ const CreateSession = () => {
                   <User
                     className={cn(
                       "mx-auto mb-2",
-                      joinAsGuest && !plexLoading ? "text-primary" : "text-muted-foreground"
+                      joinAsGuest && !plexLoading
+                        ? "text-primary"
+                        : "text-muted-foreground"
                     )}
                     size={24}
                   />
@@ -359,7 +351,10 @@ const CreateSession = () => {
                     </div>
                   )}
                   {plexLoading ? (
-                    <Loader2 className="mx-auto mb-2 animate-spin text-primary" size={24} />
+                    <Loader2
+                      className="mx-auto mb-2 animate-spin text-primary"
+                      size={24}
+                    />
                   ) : (
                     <LogIn
                       className={cn(
@@ -373,13 +368,16 @@ const CreateSession = () => {
                     {plexUser ? plexUser.username : "Plex Login"}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    {plexLoading ? "Waiting for login..." : plexUser ? "Signed in ✓" : "Filter watched"}
+                    {plexLoading
+                      ? "Connecting..."
+                      : plexUser
+                        ? "Signed in ✓"
+                        : "Filter watched"}
                   </p>
                 </button>
               </div>
             </div>
 
-            {/* Watchlist option - only show when logged in with Plex */}
             {isPlexAuthenticated && (
               <motion.div
                 initial={{ opacity: 0, height: 0 }}
@@ -415,7 +413,9 @@ const CreateSession = () => {
                       size={24}
                     />
                     <p className="font-medium text-foreground">Full Library</p>
-                    <p className="text-xs text-muted-foreground">All available items</p>
+                    <p className="text-xs text-muted-foreground">
+                      All available items
+                    </p>
                   </button>
                   <button
                     onClick={() => {
@@ -439,23 +439,28 @@ const CreateSession = () => {
                       </div>
                     )}
                     {isLoadingWatchlist ? (
-                      <Loader2 className="mx-auto mb-2 animate-spin text-muted-foreground" size={24} />
+                      <Loader2
+                        className="mx-auto mb-2 animate-spin text-muted-foreground"
+                        size={24}
+                      />
                     ) : (
                       <List
                         className={cn(
                           "mx-auto mb-2",
-                          useWatchlist ? "text-primary" : "text-muted-foreground"
+                          useWatchlist
+                            ? "text-primary"
+                            : "text-muted-foreground"
                         )}
                         size={24}
                       />
                     )}
                     <p className="font-medium text-foreground">My Watchlist</p>
                     <p className="text-xs text-muted-foreground">
-                      {isLoadingWatchlist 
-                        ? "Loading..." 
-                        : watchlistCount !== null 
-                          ? watchlistCount > 0 
-                            ? `${watchlistCount} item${watchlistCount !== 1 ? 's' : ''}`
+                      {isLoadingWatchlist
+                        ? "Loading..."
+                        : watchlistCount !== null
+                          ? watchlistCount > 0
+                            ? `${watchlistCount} item${watchlistCount !== 1 ? "s" : ""}`
                             : "No items in library"
                           : "Loading..."}
                     </p>
@@ -464,10 +469,8 @@ const CreateSession = () => {
               </motion.div>
             )}
 
-            {/* Media type selection */}
             <MediaTypeSelector value={mediaType} onChange={setMediaType} />
 
-            {/* Session Mode Selection - Classic vs Timed */}
             <div className="space-y-3">
               <label className="text-sm font-medium text-foreground">
                 Session Mode
@@ -490,12 +493,16 @@ const CreateSession = () => {
                   <Infinity
                     className={cn(
                       "mx-auto mb-2",
-                      sessionMode === "classic" ? "text-primary" : "text-muted-foreground"
+                      sessionMode === "classic"
+                        ? "text-primary"
+                        : "text-muted-foreground"
                     )}
                     size={24}
                   />
                   <p className="font-medium text-foreground">Classic</p>
-                  <p className="text-xs text-muted-foreground text-center">Swipe until you find a match</p>
+                  <p className="text-xs text-muted-foreground text-center">
+                    Swipe until you find a match
+                  </p>
                 </button>
                 <button
                   onClick={() => handleSessionModeChange("timed")}
@@ -514,17 +521,20 @@ const CreateSession = () => {
                   <Timer
                     className={cn(
                       "mx-auto mb-2",
-                      sessionMode === "timed" ? "text-primary" : "text-muted-foreground"
+                      sessionMode === "timed"
+                        ? "text-primary"
+                        : "text-muted-foreground"
                     )}
                     size={24}
                   />
                   <p className="font-medium text-foreground">Timed</p>
-                  <p className="text-xs text-muted-foreground text-center">Collect all matches and vote</p>
+                  <p className="text-xs text-muted-foreground text-center">
+                    Collect all matches and vote
+                  </p>
                 </button>
               </div>
             </div>
 
-            {/* Duration selector - only show when timed mode is selected */}
             {sessionMode === "timed" && (
               <motion.div
                 initial={{ opacity: 0, height: 0 }}
@@ -535,7 +545,9 @@ const CreateSession = () => {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <Clock size={18} className="text-muted-foreground" />
-                    <span className="text-sm text-muted-foreground">Duration</span>
+                    <span className="text-sm text-muted-foreground">
+                      Duration
+                    </span>
                   </div>
                   <div className="flex items-center gap-4">
                     <button
@@ -551,8 +563,12 @@ const CreateSession = () => {
                       <Minus size={20} />
                     </button>
                     <div className="w-20 text-center">
-                      <span className="text-2xl font-bold text-foreground">{timedMinutes}</span>
-                      <span className="text-sm text-muted-foreground ml-1">min</span>
+                      <span className="text-2xl font-bold text-foreground">
+                        {timedMinutes}
+                      </span>
+                      <span className="text-sm text-muted-foreground ml-1">
+                        min
+                      </span>
                     </div>
                     <button
                       onClick={() => handleMinutesChange(1)}
@@ -571,7 +587,6 @@ const CreateSession = () => {
               </motion.div>
             )}
 
-            {/* Create button */}
             <Button
               onClick={handleCreate}
               disabled={!displayName.trim() || isCreating || plexLoading}

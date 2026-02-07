@@ -139,6 +139,17 @@ export interface CacheRefreshProgress {
   error?: string;
 }
 
+export interface VersionInfo {
+  currentVersion: string;
+  latestVersion: string | null;
+  updateAvailable: boolean;
+  releaseUrl: string | null;
+  releaseNotes: string | null;
+  publishedAt: string | null;
+  githubRepo: string;
+  error?: string;
+}
+
 export const plexApi = {
   testConnection: (plexUrl: string, plexToken: string) =>
     fetchApi<{ success: boolean; error?: string }>('/plex/test-connection', {
@@ -253,6 +264,14 @@ export const plexApi = {
         body: JSON.stringify({ pinId }),
       }
     ),
+};
+
+export const versionApi = {
+  getVersionInfo: () =>
+    fetchApiGet<VersionInfo>('/version'),
+
+  getCurrentVersion: () =>
+    fetchApiGet<{ version: string }>('/version/current'),
 };
 
 export const sessionsApi = {
