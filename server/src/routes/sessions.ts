@@ -14,12 +14,30 @@ function generateSessionCode(): string {
   return code;
 }
 
+// Helper: count current matches for a session
+function countSessionMatches(db: any, sessionId: string): number {
+  const participants = db.prepare('SELECT id FROM session_participants WHERE session_id = ?').all(sessionId);
+  const totalParticipants = participants.length;
+  
+  if (totalParticipants === 0) return 0;
+  
+  const allMatches = db.prepare(`
+    SELECT item_key, COUNT(DISTINCT participant_id) as like_count
+    FROM votes
+    WHERE session_id = ? AND vote = 1
+    GROUP BY item_key
+    HAVING like_count = ?
+  `).all(sessionId, totalParticipants) as { item_key: string; like_count: number }[];
+  
+  return allMatches.length;
+}
+
 // Create session
 router.post('/create', (req, res) => {
   try {
     console.log('[Sessions] Create request body:', JSON.stringify(req.body));
     
-    const { mediaType, displayName, isGuest, plexToken, timedDuration, useWatchlist } = req.body;
+    const { mediaType, displayName, isGuest, plexToken, timedDuration, useWatchlist, matchTarget } = req.body;
     
     // Validate required fields
     if (!displayName || typeof displayName !== 'string' || !displayName.trim()) {
@@ -52,25 +70,42 @@ router.post('/create', (req, res) => {
       ? timedDuration 
       : null;
 
+    // Handle matchTarget - convert to number or null
+    const target = matchTarget && typeof matchTarget === 'number' && matchTarget > 0
+      ? matchTarget
+      : null;
+
     // Handle useWatchlist
     const watchlistMode = useWatchlist && plexToken ? 1 : 0;
     
-    console.log('[Sessions] Creating session:', { sessionId, code, mediaType, duration, displayName: displayName.trim(), useWatchlist: watchlistMode });
+    console.log('[Sessions] Creating session:', { sessionId, code, mediaType, duration, matchTarget: target, displayName: displayName.trim(), useWatchlist: watchlistMode });
     
     // Create session - check if columns exist
     try {
       db.prepare(`
-        INSERT INTO sessions (id, code, status, media_type, preferences, timed_duration, use_watchlist, host_plex_token, created_at, updated_at)
-        VALUES (?, ?, 'waiting', ?, '{}', ?, ?, ?, datetime('now'), datetime('now'))
-      `).run(sessionId, code, mediaType || 'both', duration, watchlistMode, watchlistMode ? plexToken : null);
+        INSERT INTO sessions (id, code, status, media_type, preferences, timed_duration, match_target, use_watchlist, host_plex_token, created_at, updated_at)
+        VALUES (?, ?, 'waiting', ?, '{}', ?, ?, ?, ?, datetime('now'), datetime('now'))
+      `).run(sessionId, code, mediaType || 'both', duration, target, watchlistMode, watchlistMode ? plexToken : null);
     } catch (dbError: any) {
       // If columns don't exist, try without them
-      if (dbError.message && (dbError.message.includes('timed_duration') || dbError.message.includes('use_watchlist'))) {
-        console.log('[Sessions] Some columns not found, creating session with basic columns');
-        db.prepare(`
-          INSERT INTO sessions (id, code, status, media_type, preferences, created_at, updated_at)
-          VALUES (?, ?, 'waiting', ?, '{}', datetime('now'), datetime('now'))
-        `).run(sessionId, code, mediaType || 'both');
+      if (dbError.message && (dbError.message.includes('timed_duration') || dbError.message.includes('use_watchlist') || dbError.message.includes('match_target'))) {
+        console.log('[Sessions] Some columns not found, trying with fewer columns');
+        try {
+          db.prepare(`
+            INSERT INTO sessions (id, code, status, media_type, preferences, timed_duration, use_watchlist, host_plex_token, created_at, updated_at)
+            VALUES (?, ?, 'waiting', ?, '{}', ?, ?, ?, datetime('now'), datetime('now'))
+          `).run(sessionId, code, mediaType || 'both', duration, watchlistMode, watchlistMode ? plexToken : null);
+        } catch (dbError2: any) {
+          if (dbError2.message && (dbError2.message.includes('timed_duration') || dbError2.message.includes('use_watchlist'))) {
+            console.log('[Sessions] Some columns not found, creating session with basic columns');
+            db.prepare(`
+              INSERT INTO sessions (id, code, status, media_type, preferences, created_at, updated_at)
+              VALUES (?, ?, 'waiting', ?, '{}', datetime('now'), datetime('now'))
+            `).run(sessionId, code, mediaType || 'both');
+          } else {
+            throw dbError2;
+          }
+        }
       } else {
         throw dbError;
       }
@@ -125,6 +160,7 @@ router.get('/code/:code', (req, res) => {
         preferences,
         timed_duration: session.timed_duration || null,
         timer_end_at: session.timer_end_at || null,
+        match_target: session.match_target || null,
         use_watchlist: !!session.use_watchlist,
       }
     });
@@ -162,6 +198,7 @@ router.get('/:id', (req, res) => {
         preferences,
         timed_duration: session.timed_duration || null,
         timer_end_at: session.timer_end_at || null,
+        match_target: session.match_target || null,
         use_watchlist: !!session.use_watchlist,
       }
     });
@@ -218,6 +255,10 @@ router.patch('/:id', (req, res) => {
       fields.push('timed_duration = ?');
       values.push(updates.timed_duration);
     }
+    if (updates.match_target !== undefined) {
+      fields.push('match_target = ?');
+      values.push(updates.match_target);
+    }
     if (updates.preferences !== undefined) {
       fields.push('preferences = ?');
       // Merge with existing preferences
@@ -250,6 +291,9 @@ router.patch('/:id', (req, res) => {
       if (updatedSession?.timed_duration) {
         broadcastData.timed_duration = updatedSession.timed_duration;
       }
+      if (updatedSession?.match_target) {
+        broadcastData.match_target = updatedSession.match_target;
+      }
       
       // Broadcast update to all participants
       broadcastToSession(id, 'session_updated', broadcastData);
@@ -273,6 +317,7 @@ router.patch('/:id', (req, res) => {
         preferences,
         timed_duration: session.timed_duration || null,
         timer_end_at: session.timer_end_at || null,
+        match_target: session.match_target || null,
         use_watchlist: !!session.use_watchlist,
       } : null 
     });
@@ -415,7 +460,7 @@ router.post('/:id/votes', (req, res) => {
     // Broadcast vote to other participants
     broadcastToSession(id, 'vote_added', { participantId, itemKey, vote });
     
-    // Check session type (timed or not)
+    // Check session type (timed, match_target, or classic)
     const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as any;
     
     // For timed sessions, don't check for immediate match
@@ -423,7 +468,53 @@ router.post('/:id/votes', (req, res) => {
       return res.json({ success: true, voteId, match: false });
     }
     
-    // Check for match if this was a YES vote (non-timed session)
+    // For match_target sessions, check if this vote created a new match
+    if (session?.match_target && session.match_target > 0) {
+      // Always compute the current match count after any YES vote
+      // so we can broadcast the accurate count to ALL participants
+      if (vote) {
+        const isNewMatch = checkForMatchServer(db, id, itemKey).isMatch;
+        
+        // Count total matches (always, regardless of whether this specific vote created a new one)
+        const matchCount = countSessionMatches(db, id);
+        
+        if (isNewMatch) {
+          console.log(`[Sessions] New match found for item ${itemKey} in match_target session ${id}: ${matchCount}/${session.match_target}`);
+        }
+        
+        // Always broadcast the current match count to ALL participants
+        broadcastToSession(id, 'match_target_update', { 
+          matchCount, 
+          matchTarget: session.match_target,
+          newMatchItemKey: isNewMatch ? itemKey : null
+        });
+        
+        if (matchCount >= session.match_target) {
+          console.log(`[Sessions] Match target reached! Transitioning to voting.`);
+          
+          // Update session status to voting
+          db.prepare(`
+            UPDATE sessions SET status = 'voting', updated_at = datetime('now')
+            WHERE id = ?
+          `).run(id);
+          
+          broadcastToSession(id, 'session_updated', { 
+            status: 'voting',
+            match_target_reached: true
+          });
+          
+          return res.json({ success: true, voteId, match: false, matchTargetReached: true, matchCount });
+        }
+        
+        return res.json({ success: true, voteId, match: false, newMatch: isNewMatch, matchCount });
+      }
+      
+      // For NO votes in match_target sessions, still return current match count
+      const matchCount = countSessionMatches(db, id);
+      return res.json({ success: true, voteId, match: false, matchCount });
+    }
+    
+    // Check for match if this was a YES vote (classic non-timed session)
     if (vote) {
       const matchResult = checkForMatchServer(db, id, itemKey);
       if (matchResult.isMatch) {
@@ -538,7 +629,7 @@ function recordSessionHistory(db: any, sessionId: string, winnerItemKey: string 
       winnerTitle,
       winnerThumb,
       session.media_type,
-      session.timed_duration ? 1 : 0
+      (session.timed_duration || session.match_target) ? 1 : 0
     );
     
     console.log(`[Sessions] Recorded session ${session.code} in history`);
@@ -585,7 +676,7 @@ router.delete('/:sessionId/votes/:participantId/:itemKey', (req, res) => {
   }
 });
 
-// Get matches for timed session
+// Get matches for timed/match-target session
 router.get('/:id/matches', (req, res) => {
   try {
     const { id } = req.params;
@@ -629,7 +720,26 @@ router.get('/:id/matches', (req, res) => {
   }
 });
 
-// Cast final vote (for timed sessions)
+// Get current match count for a session
+router.get('/:id/match-count', (req, res) => {
+  try {
+    const { id } = req.params;
+    const db = getDb();
+    
+    const session = db.prepare('SELECT match_target FROM sessions WHERE id = ?').get(id) as any;
+    const matchCount = countSessionMatches(db, id);
+    
+    res.json({ 
+      matchCount, 
+      matchTarget: session?.match_target || 0 
+    });
+  } catch (error) {
+    console.error('Error getting match count:', error);
+    res.status(500).json({ error: 'Failed to get match count' });
+  }
+});
+
+// Cast final vote (for timed/match-target sessions)
 router.post('/:id/final-vote', (req, res) => {
   try {
     const { id } = req.params;

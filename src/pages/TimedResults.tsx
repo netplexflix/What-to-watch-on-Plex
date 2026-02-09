@@ -57,6 +57,7 @@ const TimedResults = () => {
   const [localSession, setLocalSession] = useState(() => getLocalSession());
   const [enablePlexButton, setEnablePlexButton] = useState(false);
   const [ratingDisplay, setRatingDisplay] = useState<'critic' | 'audience' | 'both'>('critic');
+  const [isMatchTargetSession, setIsMatchTargetSession] = useState(false);
   
   const mediaMapRef = useRef<Map<string, any>>(new Map());
   const hasHandledResultRef = useRef(false);
@@ -165,6 +166,11 @@ const TimedResults = () => {
         setSessionId(session.id);
         const userIsHost = currentLocalSession.isHost || session.host_user_id === currentLocalSession.participantId;
         setIsHost(userIsHost);
+
+        // Detect if this is a match target session
+        if (session.match_target && session.match_target > 0) {
+          setIsMatchTargetSession(true);
+        }
 
         let mediaItems: any[] = [];
         try {
@@ -528,7 +534,9 @@ const TimedResults = () => {
           className="text-center mb-4"
         >
           <h1 className="text-xl font-bold text-foreground mb-1">
-            {isMatchMode ? "Time's Up! 🎉" : "Session Complete"}
+            {isMatchMode 
+              ? (isMatchTargetSession ? "Target Reached! 🎯" : "Time's Up! 🎉")
+              : "Session Complete"}
           </h1>
           <p className="text-sm text-muted-foreground">
             {isMatchMode 
