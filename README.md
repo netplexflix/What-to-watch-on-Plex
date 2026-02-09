@@ -11,7 +11,7 @@ Self hosted with Docker.
 
 <p align="center">
 <img src="https://github.com/user-attachments/assets/cf67e242-ca3e-47c9-9096-7cc71061ae4b" width="20%"><br>
-<img src="https://github.com/user-attachments/assets/47c7585e-f46f-4edd-9c60-90753c50eefc" width="15%"></img> <img src="https://github.com/user-attachments/assets/7a487ae2-910f-4c3b-baab-fb9136cad996" width="15%"></img> <img src="https://github.com/user-attachments/assets/ce7a1c07-e648-48d2-87c8-f029b277e799" width="15%"></img> <img src="https://github.com/user-attachments/assets/c819dae4-eb40-4266-9d3b-e8cfa97ba542" width="15%"></img><br>
+<img src="https://github.com/user-attachments/assets/47c7585e-f46f-4edd-9c60-90753c50eefc" width="15%"></img> <img src="https://github.com/user-attachments/assets/4a5cebce-64b2-486f-a345-612aeb1d82db" width="15%"></img> <img src="https://github.com/user-attachments/assets/ce7a1c07-e648-48d2-87c8-f029b277e799" width="15%"></img> <img src="https://github.com/user-attachments/assets/c819dae4-eb40-4266-9d3b-e8cfa97ba542" width="15%"></img><br>
 <img src="https://github.com/user-attachments/assets/21d1bff0-0645-47e7-898b-104e29150703" width="15%"></img> <img src="https://github.com/user-attachments/assets/3fcda72a-d2aa-4fb6-9557-fbc798fd23c9" width="15%"></img> <img src="https://github.com/user-attachments/assets/f92988c8-82d8-4a4e-b85d-d406c6cbd328" width="15%"></img> <img src="https://github.com/user-attachments/assets/e36d1b22-381d-48a0-927f-5d78075c53d7" width="15%"></img><br>
 <img src="https://github.com/user-attachments/assets/ba47b6c4-f5ac-4c3c-a24b-549be4d2c7ff" width="15%"></img> <img src="https://github.com/user-attachments/assets/e44b0cd9-aa89-46a1-ac52-4f45feeb6288" width="15%"></img> <img src="https://github.com/user-attachments/assets/7795d06d-57e2-40a1-a366-4f4be14fa4d2" width="15%"></img> <img src="https://github.com/user-attachments/assets/04631cc9-1a16-483c-a7cd-1d9542a29e68" width="15%"></img>
 </p> 
@@ -31,9 +31,10 @@ Main Features:
 - Use your own `custom logo` on the landing page.
 - Admin panel for Settings and a `Session History` tab.
 - Choose between `Random` or `Fixed` suggestion order.
-- `Classic` or `Timed` swipe sessions:
+- Three Session Modes:
   - `Classic`: Swipe until you have a match liked by everyone.
-  - `Timed`: Swipe for chosen amount of time and vote for the best matches. Includes a tie breaker animation.
+  - `Timed`: Swipe for chosen amount of time and vote for the best matches. Includes a tie breaker.
+  - `Match Target`: Swipe until chosen amount of matches are made and vote on them. Includes a tie breaker.
 - Installable as PWA 
 
 ### Prerequisites
