@@ -1,7 +1,7 @@
 //file: /src/pages/Lobby.tsx
 import { useState, useEffect, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { Copy, Users, Play, Loader2, FolderOpen, Check, ChevronDown, ChevronUp, Search } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { Button } from "@/components/ui/button";
@@ -55,6 +55,7 @@ const Lobby = () => {
   
   // QR Code state
   const [qrEnabled, setQrEnabled] = useState(false);
+  const [qrEnlarged, setQrEnlarged] = useState(false);
 
   useEffect(() => {
     if (!code || isInitializedRef.current) return;
@@ -247,6 +248,11 @@ const Lobby = () => {
     }
   };
 
+  const handleToggleQr = () => {
+    haptics.light();
+    setQrEnlarged(prev => !prev);
+  };
+
   // Generate the invite link for QR code
   const inviteLink = `${window.location.origin}/join/${code}`;
 
@@ -264,6 +270,40 @@ const Lobby = () => {
       <div className="fixed inset-0 bg-background">
         <div className="absolute inset-0 bg-gradient-to-br from-primary/5 via-transparent to-accent/5" />
       </div>
+
+      {/* Enlarged QR Overlay */}
+      <AnimatePresence>
+        {qrEnlarged && qrEnabled && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+            onClick={handleToggleQr}
+          >
+            <motion.div
+              initial={{ scale: 0.5, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.5, opacity: 0 }}
+              transition={{ type: "spring", stiffness: 300, damping: 25 }}
+              className="p-4 bg-white rounded-2xl shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div onClick={handleToggleQr} className="cursor-pointer">
+                <QRCodeSVG
+                  value={inviteLink}
+                  size={280}
+                  level="M"
+                  includeMargin={false}
+                  bgColor="#ffffff"
+                  fgColor="#000000"
+                />
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Content */}
       <div className="flex-1 flex flex-col items-center justify-center px-6 relative z-10">
@@ -290,7 +330,10 @@ const Lobby = () => {
               animate={{ opacity: 1, scale: 1 }}
               className="flex justify-center mb-6"
             >
-              <div className="p-2 bg-white rounded-xl shadow-lg">
+              <div
+                className="p-2 bg-white rounded-xl shadow-lg cursor-pointer active:scale-95 transition-transform"
+                onClick={handleToggleQr}
+              >
                 <QRCodeSVG
                   value={inviteLink}
                   size={100}

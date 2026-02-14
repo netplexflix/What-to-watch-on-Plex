@@ -13,6 +13,9 @@ services:
       - NODE_ENV=production
       - DATA_PATH=/app/data
       - TZ=Europe/Amsterdam  # Change to your timezone
+      - PUID=1000  # Set to your user's UID (run: id -u)
+      - PGID=1000  # Set to your user's GID (run: id -g)
+      # - UMASK=002  # Optional: file permission mask
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
       interval: 30s

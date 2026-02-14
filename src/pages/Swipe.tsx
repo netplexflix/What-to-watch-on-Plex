@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Loader2, RotateCcw, Clock } from "lucide-react";
+import { Loader2, RotateCcw, Clock, Target } from "lucide-react";
 import { Logo } from "@/components/Logo";
 import { SwipeCard } from "@/components/SwipeCard";
 import { Button } from "@/components/ui/button";
@@ -191,6 +191,11 @@ const Swipe = () => {
   const [timerProgress, setTimerProgress] = useState(100); // percentage
   const [totalDuration, setTotalDuration] = useState<number>(0); // in seconds
   
+  // Match target state
+  const [isMatchTargetSession, setIsMatchTargetSession] = useState(false);
+  const [matchTarget, setMatchTarget] = useState<number>(0);
+  const [matchCount, setMatchCount] = useState<number>(0);
+  
   const itemsLoadedRef = useRef(false);
   const sessionSeedRef = useRef<number | null>(null);
   const isInitializedRef = useRef(false);
@@ -204,6 +209,9 @@ const Swipe = () => {
   const isSwipingRef = useRef(false);
   const timerIntervalRef = useRef<number | null>(null);
   const isTimedSessionRef = useRef(false);
+  const isMatchTargetSessionRef = useRef(false);
+  const matchTargetRef = useRef(0);
+  const matchCountRef = useRef(0);
   const labelRestrictionsRef = useRef(labelRestrictions);
 
   useEffect(() => {
@@ -221,6 +229,18 @@ const Swipe = () => {
   useEffect(() => {
     isTimedSessionRef.current = isTimedSession;
   }, [isTimedSession]);
+
+  useEffect(() => {
+    isMatchTargetSessionRef.current = isMatchTargetSession;
+  }, [isMatchTargetSession]);
+
+  useEffect(() => {
+    matchTargetRef.current = matchTarget;
+  }, [matchTarget]);
+
+  useEffect(() => {
+    matchCountRef.current = matchCount;
+  }, [matchCount]);
 
   useEffect(() => {
     labelRestrictionsRef.current = labelRestrictions;
@@ -274,9 +294,9 @@ const Swipe = () => {
     };
   }, [isTimedSession, timerEndAt, totalDuration, code, navigate, haptics]);
 
-  // Effect to handle navigation when match is found (non-timed sessions only)
+  // Effect to handle navigation when match is found (classic sessions only)
   useEffect(() => {
-    if (matchFound && !hasNavigatedRef.current && !isTimedSessionRef.current) {
+    if (matchFound && !hasNavigatedRef.current && !isTimedSessionRef.current && !isMatchTargetSessionRef.current) {
       hasNavigatedRef.current = true;
       console.log("[Swipe] Match found, navigating to results");
       navigate(`/results/${code}`);
@@ -286,7 +306,9 @@ const Swipe = () => {
   const navigateToResults = useCallback(() => {
     if (hasNavigatedRef.current) return;
     if (isTimedSessionRef.current) {
-      // For timed sessions, go to timed-results
+      hasNavigatedRef.current = true;
+      navigate(`/timed-results/${code}`);
+    } else if (isMatchTargetSessionRef.current) {
       hasNavigatedRef.current = true;
       navigate(`/timed-results/${code}`);
     } else {
@@ -431,7 +453,6 @@ const Swipe = () => {
         try {
           const { data: watchlistData } = await plexApi.getWatchlist(hostPlexToken);
           if (watchlistData?.watchlistKeys && watchlistData.watchlistKeys.length > 0) {
-            // Get all cached items first
             const { data: cachedData } = await sessionsApi.getCachedMedia(mediaType || 'both');
             if (cachedData?.items) {
               const watchlistSet = new Set(watchlistData.watchlistKeys);
@@ -495,10 +516,8 @@ const Swipe = () => {
           const itemLabels = item.labels || [];
           
           if (currentLabelRestrictions.mode === 'include') {
-            // Only include items that have at least one of the restricted labels
             return currentLabelRestrictions.labels.some(label => itemLabels.includes(label));
           } else {
-            // Exclude items that have any of the restricted labels
             return !currentLabelRestrictions.labels.some(label => itemLabels.includes(label));
           }
         });
@@ -688,15 +707,13 @@ const Swipe = () => {
           console.log(`[Swipe] This is a timed session: ${session.timed_duration} minutes`);
           setIsTimedSession(true);
           isTimedSessionRef.current = true;
-          setTotalDuration(session.timed_duration * 60); // Convert minutes to seconds
+          setTotalDuration(session.timed_duration * 60);
           
-          // If timer_end_at is already set (session already started), use it
           if (session.timer_end_at) {
             const endTime = new Date(session.timer_end_at);
             console.log(`[Swipe] Timer already running, ends at: ${endTime.toISOString()}`);
             setTimerEndAt(endTime);
             
-            // Check if timer already expired
             if (endTime.getTime() <= Date.now()) {
               console.log('[Swipe] Timer already expired, navigating to timed results');
               hasNavigatedRef.current = true;
@@ -704,6 +721,22 @@ const Swipe = () => {
               return;
             }
           }
+        }
+
+        // Check if this is a match target session
+        if (session.match_target && session.match_target > 0) {
+          console.log(`[Swipe] This is a match target session: ${session.match_target} matches`);
+          setIsMatchTargetSession(true);
+          isMatchTargetSessionRef.current = true;
+          setMatchTarget(session.match_target);
+          matchTargetRef.current = session.match_target;
+        }
+
+        // If session already completed or in voting, redirect
+        if (session.status === 'voting') {
+          hasNavigatedRef.current = true;
+          navigate(`/timed-results/${code}`);
+          return;
         }
 
         if (session.winner_item_key) {
@@ -757,7 +790,6 @@ const Swipe = () => {
           setParticipants(currentParticipants);
           participantsRef.current = currentParticipants;
           
-          // Get session data for watchlist info
           const { data: sessionData } = await sessionsApi.getById(sid);
           await loadMediaItems(sid, mediaTypeRef.current, sessionData?.session?.use_watchlist, sessionData?.session?.host_plex_token);
         }
@@ -767,8 +799,8 @@ const Swipe = () => {
     const unsubVoteAdded = wsClient.on('vote_added', async () => {
       if (hasNavigatedRef.current || matchFound) return;
       
-      // For timed sessions, don't check for immediate match on every vote
-      if (isTimedSessionRef.current) return;
+      // For timed sessions and match target sessions, don't check for immediate match on every vote
+      if (isTimedSessionRef.current || isMatchTargetSessionRef.current) return;
       
       const sid = sessionIdRef.current;
       if (!sid) return;
@@ -785,6 +817,15 @@ const Swipe = () => {
       }
     });
 
+    // Listen for match target updates - this fires for ALL participants in the session
+    const unsubMatchTargetUpdate = wsClient.on('match_target_update', (data) => {
+      if (!isMatchTargetSessionRef.current) return;
+      
+      console.log(`[Swipe] match_target_update received: ${data.matchCount}/${data.matchTarget}`);
+      setMatchCount(data.matchCount);
+      matchCountRef.current = data.matchCount;
+    });
+
     const unsubSessionUpdated = wsClient.on('session_updated', (data) => {
       console.log("[Swipe] session_updated event received:", data);
       
@@ -795,10 +836,22 @@ const Swipe = () => {
         setTimerEndAt(endTime);
       }
       
+      // Match target reached or session moved to voting - navigate ALL participants
+      if (data.match_target_reached || data.status === 'voting') {
+        if (!hasNavigatedRef.current) {
+          console.log("[Swipe] Voting status received, navigating to timed results");
+          hasNavigatedRef.current = true;
+          haptics.success();
+          toast.success(isMatchTargetSessionRef.current ? "Match target reached! Time to vote!" : "Time to vote!");
+          navigate(`/timed-results/${code}`);
+          return;
+        }
+      }
+      
       if (data.winner_item_key || data.status === 'completed') {
-        // For timed sessions, go to timed-results instead
-        if (isTimedSessionRef.current) {
-          console.log("[Swipe] Timed session completed, navigating to timed results");
+        // For timed/match-target sessions, go to timed-results instead
+        if (isTimedSessionRef.current || isMatchTargetSessionRef.current) {
+          console.log("[Swipe] Session completed, navigating to timed results");
           if (!hasNavigatedRef.current) {
             hasNavigatedRef.current = true;
             navigate(`/timed-results/${code}`);
@@ -828,11 +881,12 @@ const Swipe = () => {
     return () => {
       unsubParticipantUpdated();
       unsubVoteAdded();
+      unsubMatchTargetUpdate();
       unsubSessionUpdated();
     };
-  }, [sessionId, waitingForQuestions, matchFound, code, navigate, checkAllQuestionsCompleted, loadMediaItems, navigateToResults]);
+  }, [sessionId, waitingForQuestions, matchFound, code, navigate, checkAllQuestionsCompleted, loadMediaItems, navigateToResults, haptics]);
 
-  // Periodically check for match (backup mechanism) - only for non-timed sessions
+  // Periodically check for match (backup mechanism) - only for classic sessions
   useEffect(() => {
     if (!sessionId || loading || waitingForQuestions || matchFound || hasNavigatedRef.current) return;
     
@@ -840,9 +894,29 @@ const Swipe = () => {
     if (isTimedSessionRef.current) return;
 
     const checkForMatch = async () => {
+      if (hasNavigatedRef.current) return;
+      
       try {
         const { data: sessionData } = await sessionsApi.getById(sessionId);
-        if (sessionData?.session?.winner_item_key || sessionData?.session?.status === 'completed') {
+        if (!sessionData?.session) return;
+        
+        // For match target sessions, check if status changed to voting
+        if (isMatchTargetSessionRef.current) {
+          if (sessionData.session.status === 'voting') {
+            console.log("[Swipe] Voting status detected via periodic check");
+            if (!hasNavigatedRef.current) {
+              hasNavigatedRef.current = true;
+              haptics.success();
+              toast.success("Match target reached! Time to vote!");
+              navigate(`/timed-results/${code}`);
+            }
+            return;
+          }
+          return; // Don't check for winner in match target sessions during swiping
+        }
+        
+        // Classic session: check for winner
+        if (sessionData.session.winner_item_key || sessionData.session.status === 'completed') {
           console.log("[Swipe] Match detected via periodic check");
           if (sessionData.session.winner_item_key) {
             setWinnerItemKey(sessionData.session.winner_item_key);
@@ -858,7 +932,35 @@ const Swipe = () => {
     const intervalId = setInterval(checkForMatch, 2000);
 
     return () => clearInterval(intervalId);
-  }, [sessionId, loading, waitingForQuestions, matchFound, navigateToResults]);
+  }, [sessionId, loading, waitingForQuestions, matchFound, navigateToResults, navigate, code, haptics]);
+
+  // Periodic match count sync for match target sessions (backup for missed WebSocket events)
+  useEffect(() => {
+    if (!sessionId || !isMatchTargetSession || loading || waitingForQuestions || hasNavigatedRef.current) return;
+
+    const syncMatchCount = async () => {
+      if (hasNavigatedRef.current) return;
+      
+      try {
+        const response = await fetch(`/api/sessions/${sessionId}/match-count`);
+        if (response.ok) {
+          const data = await response.json();
+          if (data.matchCount !== undefined && data.matchCount !== matchCountRef.current) {
+            console.log(`[Swipe] Match count synced: ${data.matchCount} (was ${matchCountRef.current})`);
+            setMatchCount(data.matchCount);
+            matchCountRef.current = data.matchCount;
+          }
+        }
+      } catch (err) {
+        // Silently ignore
+      }
+    };
+
+    // Sync every 3 seconds
+    const intervalId = setInterval(syncMatchCount, 3000);
+
+    return () => clearInterval(intervalId);
+  }, [sessionId, isMatchTargetSession, loading, waitingForQuestions]);
 
   const handleSwipe = useCallback(
     async (direction: "left" | "right") => {
@@ -892,8 +994,8 @@ const Swipe = () => {
           throw new Error(error);
         }
 
-        // For non-timed sessions, server detected a match - set state to trigger navigation immediately
-        if (data?.match && !isTimedSessionRef.current) {
+        // For classic sessions, server detected a match
+        if (data?.match && !isTimedSessionRef.current && !isMatchTargetSessionRef.current) {
           console.log("[Swipe] Server confirmed match for item:", data.winnerItemKey || currentItem.ratingKey);
           haptics.success();
           if (data.winnerItemKey) {
@@ -902,6 +1004,25 @@ const Swipe = () => {
           setMatchFound(true);
           isSwipingRef.current = false;
           return;
+        }
+
+        // For match target sessions, update match count from HTTP response
+        if (isMatchTargetSessionRef.current && data) {
+          if (data.matchCount !== undefined) {
+            setMatchCount(data.matchCount);
+            matchCountRef.current = data.matchCount;
+          }
+          if (data.matchTargetReached) {
+            console.log("[Swipe] Match target reached via vote response!");
+            haptics.success();
+            toast.success("Match target reached! Time to vote!");
+            if (!hasNavigatedRef.current) {
+              hasNavigatedRef.current = true;
+              navigate(`/timed-results/${code}`);
+            }
+            isSwipingRef.current = false;
+            return;
+          }
         }
       } catch (error) {
         console.error("[Swipe] Error recording vote:", error);
@@ -923,11 +1044,45 @@ const Swipe = () => {
       setCurrentIndex(nextIndex);
       isSwipingRef.current = false;
 
-      // For timed sessions, don't end when items run out - just show waiting
+      // Handle running out of items
       if (nextIndex >= items.length) {
         if (isTimedSessionRef.current) {
           setWaitingForOthers(true);
           // Don't navigate - wait for timer to expire
+        } else if (isMatchTargetSessionRef.current) {
+          // For match target sessions, if we run out of items, go to voting with whatever matches we have
+          console.log("[Swipe] Ran out of items in match target session, going to voting");
+          setWaitingForOthers(true);
+          
+          // Wait a moment for other participants, then check
+          setTimeout(async () => {
+            if (hasNavigatedRef.current) return;
+            
+            const sid = sessionIdRef.current;
+            if (!sid) return;
+            
+            // Check if all participants are done
+            const { data: votesData } = await sessionsApi.getVotes(sid);
+            const { data: participantsData } = await sessionsApi.getParticipants(sid);
+            
+            if (votesData?.votes && participantsData?.participants) {
+              const votesPerParticipant = new Map<string, number>();
+              votesData.votes.forEach((v: any) => {
+                votesPerParticipant.set(v.participant_id, (votesPerParticipant.get(v.participant_id) || 0) + 1);
+              });
+              
+              const allDone = participantsData.participants.every((p: any) => 
+                (votesPerParticipant.get(p.id) || 0) >= items.length
+              );
+              
+              if (allDone && !hasNavigatedRef.current) {
+                // All done, transition to voting
+                console.log("[Swipe] All participants done in match target session, transitioning to voting");
+                await sessionsApi.update(sid, { status: "voting" });
+                // Navigation will happen via the session_updated WebSocket event
+              }
+            }
+          }, 2000);
         } else {
           setWaitingForOthers(true);
           
@@ -966,7 +1121,7 @@ const Swipe = () => {
         }
       }
     },
-    [localSession, items, haptics, navigateToResults, matchFound]
+    [localSession, items, haptics, navigateToResults, matchFound, navigate, code]
   );
 
   const handleUndo = useCallback(() => {
@@ -1103,13 +1258,34 @@ const Swipe = () => {
             </div>
           </div>
         )}
+
+        {/* Match target progress for match target sessions */}
+        {isMatchTargetSession && (
+          <div className="w-full max-w-md mb-6">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <Target size={16} className="text-muted-foreground" />
+                <span className="text-sm text-muted-foreground">Matches found</span>
+              </div>
+              <span className="text-sm font-mono text-foreground">{matchCount} / {matchTarget}</span>
+            </div>
+            <div className="w-full h-2 bg-secondary rounded-full overflow-hidden">
+              <motion.div
+                className="h-full bg-primary"
+                style={{ width: `${matchTarget > 0 ? (matchCount / matchTarget) * 100 : 0}%` }}
+              />
+            </div>
+          </div>
+        )}
         
         <Loader2 className="animate-spin text-primary mb-4" size={48} />
         <h1 className="text-2xl font-bold text-foreground mb-2">All Done!</h1>
         <p className="text-muted-foreground text-center">
           {isTimedSession 
             ? "Waiting for the timer to end..."
-            : "Waiting for others to finish swiping..."}
+            : isMatchTargetSession
+              ? "Waiting for others to finish swiping..."
+              : "Waiting for others to finish swiping..."}
         </p>
         <p className="text-sm text-muted-foreground mt-4">
           {currentIndex} of {items.length} items reviewed
@@ -1157,6 +1333,29 @@ const Swipe = () => {
                 initial={false}
                 animate={{ width: `${timerProgress}%` }}
                 transition={{ duration: 0.5, ease: "linear" }}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Match target progress bar */}
+        {isMatchTargetSession && (
+          <div className="mb-2">
+            <div className="flex items-center justify-between mb-1">
+              <div className="flex items-center gap-1">
+                <Target size={12} className="text-muted-foreground" />
+                <span className="text-xs text-muted-foreground">Matches</span>
+              </div>
+              <span className="text-xs font-mono text-foreground">
+                {matchCount} / {matchTarget}
+              </span>
+            </div>
+            <div className="w-full h-1.5 bg-secondary rounded-full overflow-hidden">
+              <motion.div
+                className="h-full bg-primary"
+                initial={false}
+                animate={{ width: `${matchTarget > 0 ? (matchCount / matchTarget) * 100 : 0}%` }}
+                transition={{ duration: 0.3 }}
               />
             </div>
           </div>

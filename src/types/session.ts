@@ -11,6 +11,7 @@ export interface Session {
   media_type?: 'movies' | 'shows' | 'both';
   timed_duration?: number | null;  // in minutes
   timer_end_at?: string | null;    // ISO timestamp
+  match_target?: number | null;    // number of matches to collect before voting
   use_watchlist?: boolean;
   host_plex_token?: string | null;
 }

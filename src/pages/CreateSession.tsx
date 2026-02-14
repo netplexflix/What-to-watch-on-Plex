@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { ArrowLeft, User, LogIn, Check, Loader2, Clock, Minus, Plus, Infinity, Timer, List, Library } from "lucide-react";
+import { ArrowLeft, User, LogIn, Check, Loader2, Clock, Minus, Plus, Infinity, Timer, List, Library, Target } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Logo } from "@/components/Logo";
@@ -27,12 +27,13 @@ const CreateSession = () => {
   const [isCreating, setIsCreating] = useState(false);
   const [joinAsGuest, setJoinAsGuest] = useState(true);
   const [mediaType, setMediaType] = useState<"movies" | "shows" | "both">(
-    "both"
+    "movies"
   );
-  const [sessionMode, setSessionMode] = useState<"classic" | "timed">(
+  const [sessionMode, setSessionMode] = useState<"classic" | "timed" | "match_target">(
     "classic"
   );
   const [timedMinutes, setTimedMinutes] = useState(5);
+  const [matchTargetCount, setMatchTargetCount] = useState(3);
   const [useWatchlist, setUseWatchlist] = useState(false);
   const [watchlistCount, setWatchlistCount] = useState<number | null>(null);
   const [isLoadingWatchlist, setIsLoadingWatchlist] = useState(false);
@@ -108,6 +109,7 @@ const CreateSession = () => {
         isGuest: boolean;
         plexToken?: string;
         timedDuration?: number;
+        matchTarget?: number;
         useWatchlist?: boolean;
       } = {
         mediaType,
@@ -121,6 +123,10 @@ const CreateSession = () => {
 
       if (sessionMode === "timed") {
         createData.timedDuration = timedMinutes;
+      }
+
+      if (sessionMode === "match_target") {
+        createData.matchTarget = matchTargetCount;
       }
 
       if (useWatchlist && plexToken && watchlistCount && watchlistCount > 0) {
@@ -173,7 +179,7 @@ const CreateSession = () => {
     }
   };
 
-  const handleSessionModeChange = (mode: "classic" | "timed") => {
+  const handleSessionModeChange = (mode: "classic" | "timed" | "match_target") => {
     haptics.selection();
     setSessionMode(mode);
   };
@@ -181,6 +187,11 @@ const CreateSession = () => {
   const handleMinutesChange = (delta: number) => {
     haptics.selection();
     setTimedMinutes((prev) => Math.max(1, Math.min(60, prev + delta)));
+  };
+
+  const handleMatchTargetChange = (delta: number) => {
+    haptics.selection();
+    setMatchTargetCount((prev) => Math.max(2, Math.min(20, prev + delta)));
   };
 
   const isPlexSelected = !joinAsGuest || plexLoading;
@@ -475,61 +486,89 @@ const CreateSession = () => {
               <label className="text-sm font-medium text-foreground">
                 Session Mode
               </label>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-2">
                 <button
                   onClick={() => handleSessionModeChange("classic")}
                   className={cn(
-                    "relative p-4 rounded-xl transition-all duration-200",
+                    "relative p-3 rounded-xl transition-all duration-200",
                     sessionMode === "classic"
                       ? "glass-card border-2 border-primary glow-primary"
                       : "glass-card border-2 border-transparent hover:border-muted-foreground/30"
                   )}
                 >
                   {sessionMode === "classic" && (
-                    <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-primary flex items-center justify-center">
-                      <Check size={12} className="text-primary-foreground" />
+                    <div className="absolute top-1.5 right-1.5 w-4 h-4 rounded-full bg-primary flex items-center justify-center">
+                      <Check size={10} className="text-primary-foreground" />
                     </div>
                   )}
                   <Infinity
                     className={cn(
-                      "mx-auto mb-2",
+                      "mx-auto mb-1.5",
                       sessionMode === "classic"
                         ? "text-primary"
                         : "text-muted-foreground"
                     )}
-                    size={24}
+                    size={22}
                   />
-                  <p className="font-medium text-foreground">Classic</p>
-                  <p className="text-xs text-muted-foreground text-center">
-                    Swipe until you find a match
+                  <p className="font-medium text-foreground text-xs">Classic</p>
+                  <p className="text-[10px] text-muted-foreground text-center leading-tight">
+                    First match wins
                   </p>
                 </button>
                 <button
                   onClick={() => handleSessionModeChange("timed")}
                   className={cn(
-                    "relative p-4 rounded-xl transition-all duration-200",
+                    "relative p-3 rounded-xl transition-all duration-200",
                     sessionMode === "timed"
                       ? "glass-card border-2 border-primary glow-primary"
                       : "glass-card border-2 border-transparent hover:border-muted-foreground/30"
                   )}
                 >
                   {sessionMode === "timed" && (
-                    <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-primary flex items-center justify-center">
-                      <Check size={12} className="text-primary-foreground" />
+                    <div className="absolute top-1.5 right-1.5 w-4 h-4 rounded-full bg-primary flex items-center justify-center">
+                      <Check size={10} className="text-primary-foreground" />
                     </div>
                   )}
                   <Timer
                     className={cn(
-                      "mx-auto mb-2",
+                      "mx-auto mb-1.5",
                       sessionMode === "timed"
                         ? "text-primary"
                         : "text-muted-foreground"
                     )}
-                    size={24}
+                    size={22}
                   />
-                  <p className="font-medium text-foreground">Timed</p>
-                  <p className="text-xs text-muted-foreground text-center">
-                    Collect all matches and vote
+                  <p className="font-medium text-foreground text-xs">Timed</p>
+                  <p className="text-[10px] text-muted-foreground text-center leading-tight">
+                    Collect & vote
+                  </p>
+                </button>
+                <button
+                  onClick={() => handleSessionModeChange("match_target")}
+                  className={cn(
+                    "relative p-3 rounded-xl transition-all duration-200",
+                    sessionMode === "match_target"
+                      ? "glass-card border-2 border-primary glow-primary"
+                      : "glass-card border-2 border-transparent hover:border-muted-foreground/30"
+                  )}
+                >
+                  {sessionMode === "match_target" && (
+                    <div className="absolute top-1.5 right-1.5 w-4 h-4 rounded-full bg-primary flex items-center justify-center">
+                      <Check size={10} className="text-primary-foreground" />
+                    </div>
+                  )}
+                  <Target
+                    className={cn(
+                      "mx-auto mb-1.5",
+                      sessionMode === "match_target"
+                        ? "text-primary"
+                        : "text-muted-foreground"
+                    )}
+                    size={22}
+                  />
+                  <p className="font-medium text-foreground text-xs">Target</p>
+                  <p className="text-[10px] text-muted-foreground text-center leading-tight">
+                    X matches & vote
                   </p>
                 </button>
               </div>
@@ -576,6 +615,55 @@ const CreateSession = () => {
                       className={cn(
                         "w-10 h-10 rounded-full flex items-center justify-center transition-all",
                         timedMinutes >= 60
+                          ? "bg-secondary text-muted-foreground cursor-not-allowed"
+                          : "bg-secondary hover:bg-secondary/80 text-foreground active:scale-95"
+                      )}
+                    >
+                      <Plus size={20} />
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+
+            {sessionMode === "match_target" && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                className="glass-card rounded-xl p-4"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Target size={18} className="text-muted-foreground" />
+                    <span className="text-sm text-muted-foreground">
+                      Matches needed
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <button
+                      onClick={() => handleMatchTargetChange(-1)}
+                      disabled={matchTargetCount <= 2}
+                      className={cn(
+                        "w-10 h-10 rounded-full flex items-center justify-center transition-all",
+                        matchTargetCount <= 2
+                          ? "bg-secondary text-muted-foreground cursor-not-allowed"
+                          : "bg-secondary hover:bg-secondary/80 text-foreground active:scale-95"
+                      )}
+                    >
+                      <Minus size={20} />
+                    </button>
+                    <div className="w-20 text-center">
+                      <span className="text-2xl font-bold text-foreground">
+                        {matchTargetCount}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => handleMatchTargetChange(1)}
+                      disabled={matchTargetCount >= 20}
+                      className={cn(
+                        "w-10 h-10 rounded-full flex items-center justify-center transition-all",
+                        matchTargetCount >= 20
                           ? "bg-secondary text-muted-foreground cursor-not-allowed"
                           : "bg-secondary hover:bg-secondary/80 text-foreground active:scale-95"
                       )}

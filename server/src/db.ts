@@ -117,7 +117,7 @@ export function initDatabase(dataPath: string): DatabaseType {
 }
 
 function runMigrations(db: DatabaseType) {
-  // Check and add timed_duration column to sessions
+  // Check and add new columns to sessions
   const sessionsColumns = db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[];
   const sessionColumnNames = sessionsColumns.map(c => c.name);
   
@@ -139,6 +139,11 @@ function runMigrations(db: DatabaseType) {
   if (!sessionColumnNames.includes('host_plex_token')) {
     console.log('[DB Migration] Adding host_plex_token column to sessions');
     db.exec('ALTER TABLE sessions ADD COLUMN host_plex_token TEXT DEFAULT NULL');
+  }
+
+  if (!sessionColumnNames.includes('match_target')) {
+    console.log('[DB Migration] Adding match_target column to sessions');
+    db.exec('ALTER TABLE sessions ADD COLUMN match_target INTEGER DEFAULT NULL');
   }
 
   // Create final_votes table if not exists
