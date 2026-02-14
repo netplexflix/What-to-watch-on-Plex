@@ -7,7 +7,7 @@
 
 Decide what to watch on your Plex server by swiping cards based on your group's preferences.<br>
 Find a Movie or TV Show everyone wants to watch.<br> 
-Self hosted with Docker.
+Self hosted with Docker. Available on the Unraid Community Apps store.
 
 <p align="center">
 <img src="https://github.com/user-attachments/assets/cf67e242-ca3e-47c9-9096-7cc71061ae4b" width="20%"><br>
@@ -15,6 +15,8 @@ Self hosted with Docker.
 <img src="https://github.com/user-attachments/assets/21d1bff0-0645-47e7-898b-104e29150703" width="15%"></img> <img src="https://github.com/user-attachments/assets/3fcda72a-d2aa-4fb6-9557-fbc798fd23c9" width="15%"></img> <img src="https://github.com/user-attachments/assets/f92988c8-82d8-4a4e-b85d-d406c6cbd328" width="15%"></img> <img src="https://github.com/user-attachments/assets/e36d1b22-381d-48a0-927f-5d78075c53d7" width="15%"></img><br>
 <img src="https://github.com/user-attachments/assets/ba47b6c4-f5ac-4c3c-a24b-549be4d2c7ff" width="15%"></img> <img src="https://github.com/user-attachments/assets/e44b0cd9-aa89-46a1-ac52-4f45feeb6288" width="15%"></img> <img src="https://github.com/user-attachments/assets/7795d06d-57e2-40a1-a366-4f4be14fa4d2" width="15%"></img> <img src="https://github.com/user-attachments/assets/04631cc9-1a16-483c-a7cd-1d9542a29e68" width="15%"></img>
 </p> 
+
+---
 
 Main Features:
 
@@ -37,10 +39,14 @@ Main Features:
   - `Match Target`: Swipe until chosen amount of matches are made and vote on them. Includes a tie breaker.
 - Installable as PWA 
 
+---
+
 ### Prerequisites
 - Docker and Docker Compose installed.
 - A running Plex server.
-- Suggested: Set up a reverse proxy for easy external access.
+- Suggested: Set up a reverse proxy for easy external access. (Make sure Websocket Support is enabled)
+
+---
 
 ### Quick Start
 1. Download the `docker-compose.yml` file from this repository. Edit the port and timezone if needed
@@ -53,6 +59,15 @@ docker compose pull
 ```bash
 docker compose up -d
 ```
+
+---
+
+### UNRAID
+_What to Watch on Plex_ is available on the Unraid Community Apps store as _wtwp_.
+Click install and apply the default template.
+<img width="359" height="122" alt="Image" src="https://github.com/user-attachments/assets/b546fdfb-e6c0-49f3-a1ea-2022687ceb17" />
+
+---
 
 ## Configuration
 ### Plex Connection
@@ -79,10 +94,22 @@ docker compose up -d
 - **Rating Display:** Choose whether detail cards show `Critic Rating`, `Audience Rating`or `both`.
 - **Label Restrictions:** Include or Exclude items based on Plex labels.
 
+---
+
+## 🩺 Troubleshooting Common Issues:
+
+### ❌ Clients keep waiting on other users/other users are stuck on previous screen:
+When you refresh the page, you'll most likely advance. This means your connection doesn't have websocket support.<br>
+If you are behind a reverse proxy, you need to enable websocket support. [Nginx Example](https://github.com/user-attachments/assets/211b5cd8-f380-48db-b177-557541feea49)
+
+### ❌ I can't start a session/ "No Media Found":
+You first need to build a cache in settings. See step 4 above. Don't forget to click 'Save Settings' after connecting to Plex before refreshing cache.
+
+---  
+
 ### ⚠️ **Do you Need Help or have Feedback?**
 - Join the [Discord](https://discord.gg/VBNUJd7tx3).
  
----  
 ### ❤️ Support the Project
 If you like this project, please ⭐ star the repository and share it with the community!
 
