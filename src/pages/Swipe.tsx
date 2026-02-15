@@ -50,6 +50,38 @@ function itemMatchesGenres(itemGenres: string[], preferredGenres: string[]): boo
   return false;
 }
 
+// Count how many preferred genres an item matches
+function countMatchingGenres(itemGenres: string[], preferredGenres: string[]): number {
+  if (preferredGenres.length === 0) return 0;
+  
+  const normalizedItemGenres = itemGenres.map(normalizeGenre);
+  let matchCount = 0;
+  
+  for (const preferred of preferredGenres) {
+    let matched = false;
+    
+    if (normalizedItemGenres.includes(normalizeGenre(preferred))) {
+      matched = true;
+    }
+    
+    if (!matched) {
+      const aliases = GENRE_ALIASES[preferred] || [];
+      for (const alias of aliases) {
+        if (normalizedItemGenres.includes(normalizeGenre(alias))) {
+          matched = true;
+          break;
+        }
+      }
+    }
+    
+    if (matched) {
+      matchCount++;
+    }
+  }
+  
+  return matchCount;
+}
+
 // Check if an item's genres match any excluded genres
 function itemMatchesExcludedGenres(itemGenres: string[], excludedGenres: string[]): boolean {
   if (excludedGenres.length === 0) return false;
@@ -93,6 +125,36 @@ function itemMatchesLanguages(itemLanguages: string[], preferredLanguages: strin
   return false;
 }
 
+// Count how many preferred languages an item matches
+function countMatchingLanguages(itemLanguages: string[], preferredLanguages: string[]): number {
+  if (preferredLanguages.length === 0 || itemLanguages.length === 0) return 0;
+  
+  const normalizedItemLangs = itemLanguages.map(normalizeLanguage);
+  let matchCount = 0;
+  
+  for (const preferred of preferredLanguages) {
+    if (normalizedItemLangs.includes(normalizeLanguage(preferred))) {
+      matchCount++;
+    }
+  }
+  
+  return matchCount;
+}
+
+// Count how many preferred eras an item matches
+function countMatchingEras(year: number, preferredEras: string[]): number {
+  if (preferredEras.length === 0 || !year) return 0;
+  
+  let matchCount = 0;
+  for (const era of preferredEras) {
+    if (matchesEra(year, era)) {
+      matchCount++;
+    }
+  }
+  
+  return matchCount;
+}
+
 // Seeded random number generator for consistent shuffling
 function seededRandom(seed: number) {
   const x = Math.sin(seed++) * 10000;
@@ -130,6 +192,7 @@ function matchesEra(year: number, era: string): boolean {
 }
 
 // Score an item based on how well it matches preferences (higher = better match)
+// Items matching MORE preferred criteria are scored higher and appear sooner.
 function scoreItem(item: any, filters: any): number {
   let score = 0;
   
@@ -137,21 +200,29 @@ function scoreItem(item: any, filters: any): number {
   const year = item.year;
   const itemLanguages = item.languages || [];
   
+  // Genre scoring: each matching genre adds points.
+  // This means an item matching 2 preferred genres (e.g. comedy + horror) scores higher than an item matching only 1.
   if (filters.genres?.length > 0 && itemGenres.length > 0) {
-    if (itemMatchesGenres(itemGenres, filters.genres)) {
-      score += 100;
+    const genreMatches = countMatchingGenres(itemGenres, filters.genres);
+    if (genreMatches > 0) {
+      // Base score for matching at least one genre, plus bonus per additional match
+      score += 50 + (genreMatches * 50);
     }
   }
   
+  // Era scoring: each matching era adds points
   if (filters.eras?.length > 0 && year) {
-    if (filters.eras.some((era: string) => matchesEra(year, era))) {
-      score += 50;
+    const eraMatches = countMatchingEras(year, filters.eras);
+    if (eraMatches > 0) {
+      score += 25 + (eraMatches * 25);
     }
   }
   
+  // Language scoring: each matching language adds points
   if (filters.languages?.length > 0) {
-    if (itemMatchesLanguages(itemLanguages, filters.languages)) {
-      score += 75;
+    const langMatches = countMatchingLanguages(itemLanguages, filters.languages);
+    if (langMatches > 0) {
+      score += 35 + (langMatches * 40);
     }
   }
   
@@ -631,6 +702,20 @@ const Swipe = () => {
         }
         
         console.log(`[Swipe] Using random order`);
+      }
+
+      // Log score distribution for debugging
+      if (hasPreferences) {
+        const scoreDistribution = new Map<number, number>();
+        for (const item of orderedItems) {
+          scoreDistribution.set(item._score, (scoreDistribution.get(item._score) || 0) + 1);
+        }
+        const sortedScores = Array.from(scoreDistribution.entries()).sort((a, b) => b[0] - a[0]);
+        console.log('[Swipe] Score distribution:', sortedScores.map(([score, count]) => `${score}pts: ${count} items`).join(', '));
+        
+        // Log a few top items for verification
+        const topItems = orderedItems.slice(0, 5);
+        console.log('[Swipe] Top 5 items:', topItems.map(i => `${i.title} (score: ${i._score}, genres: ${i.genres.join(', ')})`));
       }
 
       // Filter watched items
