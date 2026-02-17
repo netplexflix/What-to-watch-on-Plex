@@ -1745,6 +1745,7 @@ async function fetchMediaItemsWithLanguagesAndProgress(
         cacheRefreshProgress.phase = 'shows';
       }
       
+      // Fetch library listing
       const response = await fetch(
         `${plexUrl}/library/sections/${libraryKey}/all?X-Plex-Token=${plexToken}&includeGuids=1`,
         { headers: { Accept: 'application/json' } }
@@ -1761,13 +1762,15 @@ async function fetchMediaItemsWithLanguagesAndProgress(
       console.log(`[Plex] Processing ${items.length} ${libraryType}s from library ${libraryKey}`);
       
       if (libraryType === 'movie') {
+        // Process movies in batches, fetch full metadata
         const BATCH_SIZE = 50;
         for (let i = 0; i < items.length; i += BATCH_SIZE) {
           const batch = items.slice(i, i + BATCH_SIZE);
           const ratingKeys = batch.map((item: any) => item.ratingKey).join(',');
           
+          // Fetch detailed metadata
           const detailResponse = await fetch(
-            `${plexUrl}/library/metadata/${ratingKeys}?X-Plex-Token=${plexToken}`,
+            `${plexUrl}/library/metadata/${ratingKeys}?X-Plex-Token=${plexToken}&includeGuids=1`,
             { headers: { Accept: 'application/json' } }
           );
           
@@ -1795,7 +1798,7 @@ async function fetchMediaItemsWithLanguagesAndProgress(
               labelCounts.set(label, (labelCounts.get(label) || 0) + 1);
             }
             
-            allItems.push(createMediaItem(item, detailedItem, libraryType, itemLanguages, itemLabels));
+            allItems.push(createMediaItem(detailedItem, libraryType, itemLanguages, itemLabels));
           }
           
           cacheRefreshProgress.moviesProcessed += batch.length;
@@ -1805,13 +1808,15 @@ async function fetchMediaItemsWithLanguagesAndProgress(
           }
         }
       } else {
+        // Process TV shows one by one (need episode-level language detection)
         for (let i = 0; i < items.length; i++) {
           const item = items[i];
           
           const itemLanguages = await getShowLanguagesFromEpisode(plexUrl, plexToken, item.ratingKey);
           
+          // Fetch full metadata on show lvl
           const detailResponse = await fetch(
-            `${plexUrl}/library/metadata/${item.ratingKey}?X-Plex-Token=${plexToken}`,
+            `${plexUrl}/library/metadata/${item.ratingKey}?X-Plex-Token=${plexToken}&includeGuids=1`,
             { headers: { Accept: 'application/json' } }
           );
           
@@ -1831,7 +1836,7 @@ async function fetchMediaItemsWithLanguagesAndProgress(
             labelCounts.set(label, (labelCounts.get(label) || 0) + 1);
           }
           
-          allItems.push(createMediaItem(item, detailedItem, libraryType, itemLanguages, itemLabels));
+          allItems.push(createMediaItem(detailedItem, libraryType, itemLanguages, itemLabels));
           
           cacheRefreshProgress.showsProcessed++;
           
@@ -1858,22 +1863,24 @@ async function fetchMediaItemsWithLanguagesAndProgress(
 }
 
 // Helper to create a standardized media item object
-function createMediaItem(item: any, detailedItem: any, libraryType: string, languages: string[], labels: string[]): any {
+// Uses the detailed metadata item as the primary source for all fields
+function createMediaItem(detailedItem: any, libraryType: string, languages: string[], labels: string[]): any {
   let thumbUrl: string | undefined;
-  if (item.thumb) {
-    const thumbPath = item.thumb.startsWith('/') ? item.thumb : `/${item.thumb}`;
+  if (detailedItem.thumb) {
+    const thumbPath = detailedItem.thumb.startsWith('/') ? detailedItem.thumb : `/${detailedItem.thumb}`;
     thumbUrl = `/api/plex/image?path=${encodeURIComponent(thumbPath)}`;
   }
   
   let artUrl: string | undefined;
-  if (item.art) {
-    const artPath = item.art.startsWith('/') ? item.art : `/${item.art}`;
+  if (detailedItem.art) {
+    const artPath = detailedItem.art.startsWith('/') ? detailedItem.art : `/${detailedItem.art}`;
     artUrl = `/api/plex/image?path=${encodeURIComponent(artPath)}`;
   }
   
-  const genres = item.Genre?.map((g: any) => g.tag) || [];
-  const directors = item.Director?.map((d: any) => d.tag) || [];
-  const actors = item.Role?.map((r: any) => r.tag).slice(0, 10) || [];
+  // Extract all genres
+  const genres = detailedItem.Genre?.map((g: any) => g.tag) || [];
+  const directors = detailedItem.Director?.map((d: any) => d.tag) || [];
+  const actors = detailedItem.Role?.map((r: any) => r.tag).slice(0, 10) || [];
 
   const guids: string[] = [];
   if (detailedItem.Guid) {
@@ -1886,29 +1893,29 @@ function createMediaItem(item: any, detailedItem: any, libraryType: string, lang
   }
   
   return {
-    ratingKey: item.ratingKey,
-    title: item.title,
-    year: item.year,
-    summary: item.summary,
+    ratingKey: detailedItem.ratingKey,
+    title: detailedItem.title,
+    year: detailedItem.year,
+    summary: detailedItem.summary,
     thumb: thumbUrl,
     art: artUrl,
-    rating: item.rating,
-    audienceRating: item.audienceRating,
-    contentRating: item.contentRating,
-    duration: item.duration,
-    originallyAvailableAt: item.originallyAvailableAt,
-    studio: item.studio,
-    type: item.type || libraryType,
+    rating: detailedItem.rating,
+    audienceRating: detailedItem.audienceRating,
+    contentRating: detailedItem.contentRating,
+    duration: detailedItem.duration,
+    originallyAvailableAt: detailedItem.originallyAvailableAt,
+    studio: detailedItem.studio,
+    type: detailedItem.type || libraryType,
     genres,
     directors,
     actors,
     languages,
     labels,
     guids,
-    Genre: item.Genre,
-    Director: item.Director,
-    Role: item.Role,
-    Country: item.Country,
+    Genre: detailedItem.Genre,
+    Director: detailedItem.Director,
+    Role: detailedItem.Role,
+    Country: detailedItem.Country,
   };
 }
 
