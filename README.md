@@ -93,6 +93,7 @@ Click install and apply the default template.
 - **Lobby QR Code:** Display a QR code in the lobby for easy session joining.
 - **Rating Display:** Choose whether detail cards show `Critic Rating`, `Audience Rating`or `both`.
 - **Label Restrictions:** Include or Exclude items based on Plex labels.
+- **PWA Customization:** Customize the PWA name and icon.
 
 ---
 

@@ -16,6 +16,18 @@ export default defineConfig(({ mode }) => ({
         target: 'ws://localhost:3000',
         ws: true,
       },
+      '/manifest.json': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+      },
+      '/pwa-icons': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+      },
+      '/apple-touch-icon.png': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+      },
     },
   },
   plugins: [react()],

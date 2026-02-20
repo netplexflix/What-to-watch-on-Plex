@@ -1,9 +1,8 @@
 // File: public/sw.js
-const CACHE_NAME = 'wtw-v1';
+const CACHE_NAME = 'wtw-v2';
 
-// Only cache specific static assets, not dynamic JS/CSS bundles
+// Only cache specific static assets, not dynamic content
 const STATIC_ASSETS = [
-  '/manifest.json',
   '/favicon.ico',
 ];
 
@@ -47,12 +46,16 @@ self.addEventListener('fetch', (event) => {
   // - Chrome extension requests
   // - Non-GET requests
   // - Asset bundles (JS/CSS with hashes)
+  // - Dynamic manifest and PWA icons (served by Express)
   if (
     event.request.method !== 'GET' ||
     url.pathname.startsWith('/api/') ||
     url.pathname.startsWith('/ws') ||
     url.protocol === 'chrome-extension:' ||
     url.pathname.startsWith('/assets/') ||
+    url.pathname === '/manifest.json' ||
+    url.pathname.startsWith('/pwa-icons/') ||
+    url.pathname === '/apple-touch-icon.png' ||
     url.pathname.endsWith('.js') ||
     url.pathname.endsWith('.css') ||
     url.pathname.endsWith('.map')
