@@ -1,7 +1,7 @@
 // File: src/components/admin/AdminSettingsTab.tsx
 import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
-import { Loader2, Save, Shuffle, ListOrdered, Hash, Upload, Trash2, Image, ExternalLink, Tag, X, Plus, Star, QrCode } from "lucide-react";
+import { Loader2, Save, Shuffle, ListOrdered, Hash, Upload, Trash2, Image, ExternalLink, Tag, X, Plus, Star, QrCode, Smartphone, Type, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -36,9 +36,32 @@ const DEFAULT_SETTINGS: SessionSettings = {
   enable_lobby_qr: false,
 };
 
+interface PwaSettings {
+  appName: string;
+  appShortName: string;
+  hasCustomIcon: boolean;
+}
+
+const DEFAULT_PWA_SETTINGS: PwaSettings = {
+  appName: "",
+  appShortName: "",
+  hasCustomIcon: false,
+};
+
+// Helper to force service worker to refetch manifest
+async function refreshServiceWorker() {
+  if ('serviceWorker' in navigator) {
+    const registrations = await navigator.serviceWorker.getRegistrations();
+    for (const registration of registrations) {
+      await registration.update();
+    }
+  }
+}
+
 export const AdminSettingsTab = () => {
   const haptics = useHaptics();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const pwaIconInputRef = useRef<HTMLInputElement>(null);
   const [settings, setSettings] = useState<SessionSettings>(DEFAULT_SETTINGS);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -46,9 +69,16 @@ export const AdminSettingsTab = () => {
   const [isUploadingLogo, setIsUploadingLogo] = useState(false);
   const [newLabel, setNewLabel] = useState("");
 
+  // PWA settings state
+  const [pwaSettings, setPwaSettings] = useState<PwaSettings>(DEFAULT_PWA_SETTINGS);
+  const [isSavingPwa, setIsSavingPwa] = useState(false);
+  const [isUploadingPwaIcon, setIsUploadingPwaIcon] = useState(false);
+  const [pwaIconTimestamp, setPwaIconTimestamp] = useState(Date.now());
+
   useEffect(() => {
     loadSettings();
     loadLogo();
+    loadPwaSettings();
   }, []);
 
   const loadSettings = async () => {
@@ -98,6 +128,28 @@ export const AdminSettingsTab = () => {
     }
   };
 
+  const loadPwaSettings = async () => {
+    try {
+      const { data, error } = await adminApi.getPwaSettings();
+      
+      if (error) {
+        console.error("Error loading PWA settings:", error);
+        return;
+      }
+      
+      if (data?.settings) {
+        setPwaSettings({
+          appName: data.settings.appName || "",
+          appShortName: data.settings.appShortName || "",
+          hasCustomIcon: data.settings.hasCustomIcon || false,
+        });
+        setPwaIconTimestamp(Date.now());
+      }
+    } catch (err) {
+      console.error("Exception loading PWA settings:", err);
+    }
+  };
+
   const handleSave = async () => {
     setIsSaving(true);
     haptics.medium();
@@ -138,7 +190,6 @@ export const AdminSettingsTab = () => {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    // Validate file size (5MB max)
     if (file.size > 5 * 1024 * 1024) {
       toast.error("File size must be less than 5MB");
       return;
@@ -166,7 +217,6 @@ export const AdminSettingsTab = () => {
       toast.error("Failed to upload logo");
     } finally {
       setIsUploadingLogo(false);
-      // Reset file input
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
@@ -216,6 +266,104 @@ export const AdminSettingsTab = () => {
     }));
   };
 
+  // PWA handlers
+  const handleSavePwaSettings = async () => {
+    setIsSavingPwa(true);
+    haptics.medium();
+    
+    try {
+      const { error } = await adminApi.savePwaSettings(
+        pwaSettings.appName,
+        pwaSettings.appShortName
+      );
+      
+      if (error) throw new Error(error);
+      
+      // Refresh service worker to pick up new manifest
+      await refreshServiceWorker();
+      
+      haptics.success();
+      toast.success("PWA settings saved!", {
+        description: "Users need to remove and re-add the app to their home screen to see the new name/icon.",
+        duration: 6000,
+      });
+    } catch (err) {
+      haptics.error();
+      console.error("Error saving PWA settings:", err);
+      toast.error("Failed to save PWA settings");
+    } finally {
+      setIsSavingPwa(false);
+    }
+  };
+
+  const handlePwaIconUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 10 * 1024 * 1024) {
+      toast.error("File size must be less than 10MB");
+      return;
+    }
+
+    setIsUploadingPwaIcon(true);
+    haptics.medium();
+
+    try {
+      const { data, error } = await adminApi.uploadPwaIcon(file);
+      
+      if (error) throw new Error(error);
+      
+      if (data?.success) {
+        setPwaSettings(s => ({ ...s, hasCustomIcon: true }));
+        setPwaIconTimestamp(Date.now());
+        
+        // Refresh service worker to pick up new manifest
+        await refreshServiceWorker();
+        
+        haptics.success();
+        toast.success("PWA icon uploaded!", {
+          description: "Users need to remove and re-add the app to their home screen to see the new icon.",
+          duration: 6000,
+        });
+      }
+    } catch (err) {
+      haptics.error();
+      console.error("Error uploading PWA icon:", err);
+      toast.error("Failed to upload PWA icon");
+    } finally {
+      setIsUploadingPwaIcon(false);
+      if (pwaIconInputRef.current) {
+        pwaIconInputRef.current.value = '';
+      }
+    }
+  };
+
+  const handleDeletePwaIcon = async () => {
+    haptics.medium();
+    
+    try {
+      const { error } = await adminApi.deletePwaIcon();
+      
+      if (error) throw new Error(error);
+      
+      setPwaSettings(s => ({ ...s, hasCustomIcon: false }));
+      setPwaIconTimestamp(Date.now());
+      
+      // Refresh service worker to pick up new manifest
+      await refreshServiceWorker();
+      
+      haptics.success();
+      toast.success("PWA icon removed!", {
+        description: "Users need to remove and re-add the app to their home screen to see the default icon.",
+        duration: 6000,
+      });
+    } catch (err) {
+      haptics.error();
+      console.error("Error deleting PWA icon:", err);
+      toast.error("Failed to remove PWA icon");
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -230,6 +378,7 @@ export const AdminSettingsTab = () => {
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.05 }}
         className="glass-card rounded-xl p-4 space-y-4"
       >
         <div className="flex items-center gap-2">
@@ -494,7 +643,7 @@ export const AdminSettingsTab = () => {
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.05 }}
+        transition={{ delay: 0.45 }}
         className="glass-card rounded-xl p-4"
       >
         <div className="flex items-center justify-between">
@@ -521,7 +670,7 @@ export const AdminSettingsTab = () => {
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.45 }}
+        transition={{ delay: 0.5 }}
         className="glass-card rounded-xl p-4 space-y-4"
       >
         <div className="flex items-center gap-2">
@@ -587,7 +736,7 @@ export const AdminSettingsTab = () => {
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.5 }}
+        transition={{ delay: 0.55 }}
         className="glass-card rounded-xl p-4 space-y-4"
       >
         <div className="flex items-center justify-between">
@@ -691,6 +840,152 @@ export const AdminSettingsTab = () => {
             )}
           </motion.div>
         )}
+      </motion.div>
+      {/* PWA Customization */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="glass-card rounded-xl p-4 space-y-4"
+      >
+        <div className="flex items-center gap-2">
+          <Smartphone size={20} className="text-primary" />
+          <h2 className="font-semibold text-foreground">PWA Customization</h2>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          Customize the app name and icon when installed as a Progressive Web App.
+        </p>
+
+        {/* App Name */}
+        <div className="space-y-3">
+          <div>
+            <label className="text-sm text-muted-foreground flex items-center gap-1">
+              <Type size={14} />
+              App Name
+            </label>
+            <Input
+              value={pwaSettings.appName}
+              onChange={(e) => setPwaSettings(s => ({ ...s, appName: e.target.value }))}
+              placeholder="What to Watch?"
+              className="mt-1 bg-secondary border-secondary"
+            />
+            <p className="text-xs text-muted-foreground mt-1">
+              Full name shown in app install prompts and splash screens
+            </p>
+          </div>
+          
+          <div>
+            <label className="text-sm text-muted-foreground flex items-center gap-1">
+              <Type size={14} />
+              Short Name
+            </label>
+            <Input
+              value={pwaSettings.appShortName}
+              onChange={(e) => setPwaSettings(s => ({ ...s, appShortName: e.target.value }))}
+              placeholder="WTW"
+              className="mt-1 bg-secondary border-secondary"
+              maxLength={12}
+            />
+            <p className="text-xs text-muted-foreground mt-1">
+              Short name shown under the app icon on home screen (max 12 chars)
+            </p>
+          </div>
+        </div>
+
+        {/* PWA Icon */}
+        <div className="pt-2 border-t border-secondary space-y-3">
+          <label className="text-sm text-muted-foreground flex items-center gap-1">
+            <Smartphone size={14} />
+            App Icon
+          </label>
+          <p className="text-xs text-muted-foreground">
+            Upload a square image (recommended 512×512 or larger). It will be automatically resized to 192×192 and 512×512 for PWA use. PNG, JPEG, or WebP only.
+          </p>
+          
+          {pwaSettings.hasCustomIcon ? (
+            <div className="space-y-3">
+              <div className="p-4 bg-secondary rounded-lg flex items-center gap-4">
+                <div className="flex flex-col items-center gap-1">
+                  <img 
+                    src={`/pwa-icons/icon-192.png?t=${pwaIconTimestamp}`}
+                    alt="PWA icon 192" 
+                    className="w-16 h-16 rounded-xl object-cover"
+                    onError={(e) => {
+                      (e.target as HTMLImageElement).style.display = 'none';
+                    }}
+                  />
+                  <span className="text-xs text-muted-foreground">192×192</span>
+                </div>
+                <div className="flex flex-col items-center gap-1">
+                  <img 
+                    src={`/pwa-icons/icon-512.png?t=${pwaIconTimestamp}`}
+                    alt="PWA icon 512" 
+                    className="w-24 h-24 rounded-xl object-cover"
+                    onError={(e) => {
+                      (e.target as HTMLImageElement).style.display = 'none';
+                    }}
+                  />
+                  <span className="text-xs text-muted-foreground">512×512</span>
+                </div>
+              </div>
+              <Button
+                onClick={handleDeletePwaIcon}
+                variant="outline"
+                className="w-full text-destructive hover:text-destructive hover:bg-destructive/10"
+              >
+                <Trash2 size={18} className="mr-2" />
+                Remove PWA Icon
+              </Button>
+            </div>
+          ) : (
+            <div>
+              <input
+                ref={pwaIconInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                onChange={handlePwaIconUpload}
+                className="hidden"
+              />
+              <Button
+                onClick={() => pwaIconInputRef.current?.click()}
+                disabled={isUploadingPwaIcon}
+                variant="outline"
+                className="w-full"
+              >
+                {isUploadingPwaIcon ? (
+                  <>
+                    <Loader2 className="mr-2 animate-spin" size={18} />
+                    Processing...
+                  </>
+                ) : (
+                  <>
+                    <Upload size={18} className="mr-2" />
+                    Upload PWA Icon
+                  </>
+                )}
+              </Button>
+            </div>
+          )}
+        </div>
+
+        {/* Save PWA Settings Button */}
+        <Button
+          onClick={handleSavePwaSettings}
+          disabled={isSavingPwa}
+          variant="outline"
+          className="w-full"
+        >
+          {isSavingPwa ? (
+            <>
+              <Loader2 className="mr-2 animate-spin" size={18} />
+              Saving...
+            </>
+          ) : (
+            <>
+              <Save className="mr-2" size={18} />
+              Save PWA Settings
+            </>
+          )}
+        </Button>
       </motion.div>
 
       {/* Save Button */}

@@ -5,6 +5,7 @@ import crypto from 'crypto';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import sharp from 'sharp';
 
 const router = Router();
 
@@ -21,12 +22,12 @@ try {
   console.error('[Admin] Error creating uploads directory:', err);
 }
 
-// Helper function to delete all custom-logo files
-function deleteAllCustomLogoFiles() {
+// Helper function to delete files matching a prefix
+function deleteFilesWithPrefix(prefix: string, excludeFiles: string[] = []) {
   try {
     const files = fs.readdirSync(UPLOADS_PATH);
     files.forEach(file => {
-      if (file.startsWith('custom-logo')) {
+      if (file.startsWith(prefix) && !excludeFiles.includes(file)) {
         const filePath = path.join(UPLOADS_PATH, file);
         try {
           fs.unlinkSync(filePath);
@@ -38,6 +39,11 @@ function deleteAllCustomLogoFiles() {
   } catch (err) {
     console.error('[Admin] Error reading uploads directory:', err);
   }
+}
+
+// Helper function to delete all custom-logo files
+function deleteAllCustomLogoFiles() {
+  deleteFilesWithPrefix('custom-logo');
 }
 
 const storage = multer.diskStorage({
@@ -65,6 +71,33 @@ const upload = multer({
       cb(null, true);
     } else {
       cb(new Error('Invalid file type. Only PNG, JPEG, GIF, WebP, and SVG are allowed.'));
+    }
+  },
+});
+
+// PWA icon upload storage - uses a temp filename to avoid race conditions
+const pwaIconStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, UPLOADS_PATH);
+  },
+  filename: (req, file, cb) => {
+    // Use a unique temp filename so it won't be caught by any cleanup
+    const ext = path.extname(file.originalname).toLowerCase();
+    cb(null, `temp-pwa-upload-${Date.now()}${ext}`);
+  },
+});
+
+const pwaIconUpload = multer({
+  storage: pwaIconStorage,
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB limit for source icon
+  },
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = ['image/png', 'image/jpeg', 'image/webp'];
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Only PNG, JPEG, and WebP are allowed for PWA icons.'));
     }
   },
 });
@@ -344,6 +377,195 @@ router.get('/logo/:filename', (req, res) => {
     if (!res.headersSent) {
       res.status(500).json({ error: 'Failed to serve logo' });
     }
+  }
+});
+
+// ============ PWA CUSTOMIZATION ============
+
+// Get PWA settings
+router.get('/get-pwa-settings', (req, res) => {
+  try {
+    const db = getDb();
+    const row = db.prepare('SELECT value FROM app_config WHERE key = ?').get('pwa_settings') as { value: string } | undefined;
+    
+    if (row) {
+      const settings = JSON.parse(row.value);
+      // Check if icon files still exist
+      if (settings.hasCustomIcon) {
+        const icon192Path = path.join(UPLOADS_PATH, 'pwa-icon-192.png');
+        const icon512Path = path.join(UPLOADS_PATH, 'pwa-icon-512.png');
+        if (!fs.existsSync(icon192Path) || !fs.existsSync(icon512Path)) {
+          settings.hasCustomIcon = false;
+          // Update DB
+          db.prepare(`
+            INSERT INTO app_config (key, value, updated_at) 
+            VALUES (?, ?, datetime('now'))
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+          `).run('pwa_settings', JSON.stringify(settings));
+        }
+      }
+      res.json({ settings });
+    } else {
+      res.json({ settings: null });
+    }
+  } catch (error) {
+    console.error('[Admin] Error getting PWA settings:', error);
+    res.status(500).json({ error: 'Failed to get PWA settings' });
+  }
+});
+
+// Save PWA settings (name only)
+router.post('/save-pwa-settings', (req, res) => {
+  try {
+    const { appName, appShortName } = req.body;
+    
+    const db = getDb();
+    
+    // Get existing settings to preserve icon state
+    const existing = db.prepare('SELECT value FROM app_config WHERE key = ?').get('pwa_settings') as { value: string } | undefined;
+    const currentSettings = existing ? JSON.parse(existing.value) : {};
+    
+    const newSettings = {
+      ...currentSettings,
+      appName: appName || '',
+      appShortName: appShortName || '',
+    };
+    
+    const stmt = db.prepare(`
+      INSERT INTO app_config (key, value, updated_at) 
+      VALUES (?, ?, datetime('now'))
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+    `);
+    stmt.run('pwa_settings', JSON.stringify(newSettings));
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[Admin] Error saving PWA settings:', error);
+    res.status(500).json({ error: 'Failed to save PWA settings' });
+  }
+});
+
+// Upload PWA icon
+router.post('/upload-pwa-icon', pwaIconUpload.single('icon'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const tempPath = path.join(UPLOADS_PATH, req.file.filename);
+    const icon192Path = path.join(UPLOADS_PATH, 'pwa-icon-192.png');
+    const icon512Path = path.join(UPLOADS_PATH, 'pwa-icon-512.png');
+
+    // Read the uploaded file into a buffer first, so we don't depend on the file on disk
+    // after cleanup runs
+    const inputBuffer = fs.readFileSync(tempPath);
+
+    // Delete old generated icon files (but NOT our temp upload)
+    try { if (fs.existsSync(icon192Path)) fs.unlinkSync(icon192Path); } catch (e) { /* ignore */ }
+    try { if (fs.existsSync(icon512Path)) fs.unlinkSync(icon512Path); } catch (e) { /* ignore */ }
+
+    // Generate 192x192 icon from buffer
+    await sharp(inputBuffer)
+      .resize(192, 192, { fit: 'cover', position: 'center' })
+      .png()
+      .toFile(icon192Path);
+
+    // Generate 512x512 icon from buffer
+    await sharp(inputBuffer)
+      .resize(512, 512, { fit: 'cover', position: 'center' })
+      .png()
+      .toFile(icon512Path);
+
+    // Clean up temp upload
+    try {
+      if (fs.existsSync(tempPath)) {
+        fs.unlinkSync(tempPath);
+      }
+    } catch (e) {
+      console.error('[Admin] Error cleaning up temp file:', e);
+    }
+
+    // Also clean up any other leftover temp files
+    try {
+      const files = fs.readdirSync(UPLOADS_PATH);
+      files.forEach(file => {
+        if (file.startsWith('temp-pwa-upload-')) {
+          try { fs.unlinkSync(path.join(UPLOADS_PATH, file)); } catch (e) { /* ignore */ }
+        }
+      });
+    } catch (e) { /* ignore */ }
+
+    // Update DB
+    const db = getDb();
+    const existing = db.prepare('SELECT value FROM app_config WHERE key = ?').get('pwa_settings') as { value: string } | undefined;
+    const currentSettings = existing ? JSON.parse(existing.value) : {};
+    
+    const newSettings = {
+      ...currentSettings,
+      hasCustomIcon: true,
+    };
+    
+    const stmt = db.prepare(`
+      INSERT INTO app_config (key, value, updated_at) 
+      VALUES (?, ?, datetime('now'))
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+    `);
+    stmt.run('pwa_settings', JSON.stringify(newSettings));
+
+    res.json({ success: true });
+  } catch (error) {
+    // Clean up temp file on error
+    if (req.file) {
+      const tempPath = path.join(UPLOADS_PATH, req.file.filename);
+      try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath); } catch (e) { /* ignore */ }
+    }
+    
+    console.error('[Admin] Error uploading PWA icon:', error);
+    res.status(500).json({ error: 'Failed to process icon' });
+  }
+});
+
+// Delete PWA icon
+router.post('/delete-pwa-icon', (req, res) => {
+  try {
+    // Delete icon files
+    const icon192Path = path.join(UPLOADS_PATH, 'pwa-icon-192.png');
+    const icon512Path = path.join(UPLOADS_PATH, 'pwa-icon-512.png');
+    
+    if (fs.existsSync(icon192Path)) fs.unlinkSync(icon192Path);
+    if (fs.existsSync(icon512Path)) fs.unlinkSync(icon512Path);
+    
+    // Also clean up any leftover temp files
+    try {
+      const files = fs.readdirSync(UPLOADS_PATH);
+      files.forEach(file => {
+        if (file.startsWith('temp-pwa-upload-')) {
+          try { fs.unlinkSync(path.join(UPLOADS_PATH, file)); } catch (e) { /* ignore */ }
+        }
+      });
+    } catch (e) { /* ignore */ }
+
+    // Update DB
+    const db = getDb();
+    const existing = db.prepare('SELECT value FROM app_config WHERE key = ?').get('pwa_settings') as { value: string } | undefined;
+    const currentSettings = existing ? JSON.parse(existing.value) : {};
+    
+    const newSettings = {
+      ...currentSettings,
+      hasCustomIcon: false,
+    };
+    
+    const stmt = db.prepare(`
+      INSERT INTO app_config (key, value, updated_at) 
+      VALUES (?, ?, datetime('now'))
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+    `);
+    stmt.run('pwa_settings', JSON.stringify(newSettings));
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[Admin] Error deleting PWA icon:', error);
+    res.status(500).json({ error: 'Failed to delete icon' });
   }
 });
 

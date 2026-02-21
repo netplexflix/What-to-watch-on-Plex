@@ -119,6 +119,25 @@ export const adminApi = {
   getLogo: () =>
     fetchApiGet<{ logo: { path: string; filename: string } | null }>('/admin/get-logo'),
 
+  // PWA customization
+  getPwaSettings: () =>
+    fetchApiGet<{ settings: { appName: string; appShortName: string; hasCustomIcon: boolean } | null }>('/admin/get-pwa-settings'),
+
+  savePwaSettings: (appName: string, appShortName: string) =>
+    fetchApi<{ success: boolean }>('/admin/save-pwa-settings', {
+      method: 'POST',
+      body: JSON.stringify({ appName, appShortName }),
+    }),
+
+  uploadPwaIcon: (file: File) => {
+    const formData = new FormData();
+    formData.append('icon', file);
+    return fetchApiFormData<{ success: boolean }>('/admin/upload-pwa-icon', formData);
+  },
+
+  deletePwaIcon: () =>
+    fetchApi<{ success: boolean }>('/admin/delete-pwa-icon', { method: 'POST' }),
+
   getSessionHistory: (limit = 50, offset = 0) =>
     fetchApiGet<{ history: any[]; total: number }>(`/admin/session-history?limit=${limit}&offset=${offset}`),
 
