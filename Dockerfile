@@ -1,5 +1,5 @@
 # Build stage
-FROM node:20-alpine AS builder
+FROM --platform=$BUILDPLATFORM node:20-alpine AS builder
 
 WORKDIR /app
 
@@ -42,7 +42,7 @@ COPY --from=builder /app/server/package*.json ./server/
 
 # Install production dependencies for backend
 WORKDIR /app/server
-RUN npm ci --only=production
+RUN npm ci --omit=dev
 
 WORKDIR /app
 
