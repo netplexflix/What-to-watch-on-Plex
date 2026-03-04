@@ -1,5 +1,5 @@
 //file: server/src/routes/admin.ts
-import { Router } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { getDb, generateId } from '../db.js';
 import crypto from 'crypto';
 import multer from 'multer';
@@ -8,6 +8,42 @@ import fs from 'fs';
 import sharp from 'sharp';
 
 const router = Router();
+
+interface RateLimitEntry {
+  count: number;
+  resetAt: number;
+}
+
+const rateLimitStore = new Map<string, RateLimitEntry>();
+const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
+const RATE_LIMIT_MAX = 20; // max attempts per window
+
+function authRateLimiter(req: Request, res: Response, next: NextFunction) {
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  const now = Date.now();
+  const entry = rateLimitStore.get(ip);
+
+  if (entry && now < entry.resetAt) {
+    if (entry.count >= RATE_LIMIT_MAX) {
+      const retryAfterSec = Math.ceil((entry.resetAt - now) / 1000);
+      res.set('Retry-After', String(retryAfterSec));
+      return res.status(429).json({ error: 'Too many attempts. Please try again later.' });
+    }
+    entry.count++;
+  } else {
+    rateLimitStore.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+  }
+
+  next();
+}
+
+// Periodically clean up expired entries to avoid memory growth
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of rateLimitStore.entries()) {
+    if (now >= entry.resetAt) rateLimitStore.delete(ip);
+  }
+}, RATE_LIMIT_WINDOW_MS);
 
 // Configure multer for logo uploads
 const DATA_PATH = process.env.DATA_PATH || './data';
@@ -51,10 +87,7 @@ const storage = multer.diskStorage({
     cb(null, UPLOADS_PATH);
   },
   filename: (req, file, cb) => {
-    // Delete any existing custom-logo files before saving new one
     deleteAllCustomLogoFiles();
-    
-    // Use 'custom-logo' as filename with original extension
     const ext = path.extname(file.originalname).toLowerCase();
     cb(null, `custom-logo${ext}`);
   },
@@ -63,7 +96,7 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage,
   limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB limit
+    fileSize: 5 * 1024 * 1024,
   },
   fileFilter: (req, file, cb) => {
     const allowedTypes = ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/svg+xml'];
@@ -75,13 +108,11 @@ const upload = multer({
   },
 });
 
-// PWA icon upload storage - uses a temp filename to avoid race conditions
 const pwaIconStorage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, UPLOADS_PATH);
   },
   filename: (req, file, cb) => {
-    // Use a unique temp filename so it won't be caught by any cleanup
     const ext = path.extname(file.originalname).toLowerCase();
     cb(null, `temp-pwa-upload-${Date.now()}${ext}`);
   },
@@ -90,7 +121,7 @@ const pwaIconStorage = multer.diskStorage({
 const pwaIconUpload = multer({
   storage: pwaIconStorage,
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB limit for source icon
+    fileSize: 10 * 1024 * 1024,
   },
   fileFilter: (req, file, cb) => {
     const allowedTypes = ['image/png', 'image/jpeg', 'image/webp'];
@@ -106,6 +137,38 @@ const pwaIconUpload = multer({
 function hashPassword(password: string): string {
   return crypto.createHash('sha256').update(password).digest('hex');
 }
+
+// ============ AUTH MIDDLEWARE ============
+
+// Verify admin auth via X-Admin-Token header
+function requireAdmin(req: Request, res: Response, next: NextFunction) {
+  const token = req.headers['x-admin-token'] as string;
+  
+  if (!token) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+  
+  try {
+    const db = getDb();
+    const row = db.prepare('SELECT value FROM app_config WHERE key = ?').get('admin_password') as { value: string } | undefined;
+    
+    if (!row) {
+      return res.status(401).json({ error: 'Admin password not set' });
+    }
+    
+    const config = JSON.parse(row.value);
+    if (config.hash !== token) {
+      return res.status(403).json({ error: 'Invalid credentials' });
+    }
+    
+    next();
+  } catch (error) {
+    console.error('[Admin] Auth middleware error:', error);
+    return res.status(500).json({ error: 'Authentication error' });
+  }
+}
+
+// ============ PUBLIC ROUTES (no auth required) ============
 
 // Check if admin password is set
 router.post('/check-password-status', (req, res) => {
@@ -126,7 +189,7 @@ router.post('/check-password-status', (req, res) => {
 });
 
 // Set admin password
-router.post('/set-password', (req, res) => {
+router.post('/set-password', authRateLimiter, (req, res) => {
   try {
     const { passwordHash } = req.body;
     if (!passwordHash) {
@@ -158,7 +221,7 @@ router.post('/set-password', (req, res) => {
 });
 
 // Verify admin password
-router.post('/verify-password', (req, res) => {
+router.post('/verify-password', authRateLimiter, (req, res) => {
   try {
     const { passwordHash } = req.body;
     if (!passwordHash) {
@@ -180,8 +243,150 @@ router.post('/verify-password', (req, res) => {
   }
 });
 
+// Serve custom logo file
+router.get('/logo/:filename', (req, res) => {
+  try {
+    const { filename } = req.params;
+    
+    if (!filename.startsWith('custom-logo')) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    
+    const sanitizedFilename = path.basename(filename);
+    const filePath = path.resolve(UPLOADS_PATH, sanitizedFilename);
+    
+    // Ensure resolved path is within UPLOADS_PATH
+    if (!filePath.startsWith(path.resolve(UPLOADS_PATH))) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'Logo not found' });
+    }
+    
+    const ext = path.extname(sanitizedFilename).toLowerCase();
+    const contentTypes: Record<string, string> = {
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.gif': 'image/gif',
+      '.webp': 'image/webp',
+      '.svg': 'image/svg+xml',
+    };
+    
+    const contentType = contentTypes[ext] || 'application/octet-stream';
+    
+    res.set('Content-Type', contentType);
+    res.set('Cache-Control', 'public, max-age=86400');
+    
+    res.sendFile(filePath, (err) => {
+      if (err) {
+        console.error('[Admin] Error sending file:', err);
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Failed to serve logo' });
+        }
+      }
+    });
+  } catch (error) {
+    console.error('[Admin] Exception serving logo:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to serve logo' });
+    }
+  }
+});
+
+// Get custom logo config
+router.get('/get-logo', (req, res) => {
+  try {
+    const db = getDb();
+    const row = db.prepare('SELECT value FROM app_config WHERE key = ?').get('custom_logo') as { value: string } | undefined;
+    
+    if (row) {
+      const logoConfig = JSON.parse(row.value);
+      const filePath = path.join(UPLOADS_PATH, logoConfig.filename);
+      if (fs.existsSync(filePath)) {
+        res.json({ logo: logoConfig });
+      } else {
+        db.prepare('DELETE FROM app_config WHERE key = ?').run('custom_logo');
+        res.json({ logo: null });
+      }
+    } else {
+      res.json({ logo: null });
+    }
+  } catch (error) {
+    console.error('[Admin] Error getting logo:', error);
+    res.status(500).json({ error: 'Failed to get logo' });
+  }
+});
+
+// Get PWA settings
+router.get('/get-pwa-settings', (req, res) => {
+  try {
+    const db = getDb();
+    const row = db.prepare('SELECT value FROM app_config WHERE key = ?').get('pwa_settings') as { value: string } | undefined;
+    
+    if (row) {
+      const settings = JSON.parse(row.value);
+      if (settings.hasCustomIcon) {
+        const icon192Path = path.join(UPLOADS_PATH, 'pwa-icon-192.png');
+        const icon512Path = path.join(UPLOADS_PATH, 'pwa-icon-512.png');
+        if (!fs.existsSync(icon192Path) || !fs.existsSync(icon512Path)) {
+          settings.hasCustomIcon = false;
+          db.prepare(`
+            INSERT INTO app_config (key, value, updated_at) 
+            VALUES (?, ?, datetime('now'))
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+          `).run('pwa_settings', JSON.stringify(settings));
+        }
+      }
+      res.json({ settings });
+    } else {
+      res.json({ settings: null });
+    }
+  } catch (error) {
+    console.error('[Admin] Error getting PWA settings:', error);
+    res.status(500).json({ error: 'Failed to get PWA settings' });
+  }
+});
+
+// Get session settings
+router.post('/get-session-settings', (req, res) => {
+  try {
+    const db = getDb();
+    const row = db.prepare('SELECT value FROM app_config WHERE key = ?').get('session_settings') as { value: string } | undefined;
+    
+    if (row) {
+      const settings = JSON.parse(row.value);
+      // Return only non-sensitive session settings
+      res.json({ 
+        settings: {
+          suggestion_order: settings.suggestion_order,
+          max_choices: settings.max_choices,
+          max_exclusions: settings.max_exclusions,
+          enable_collections: settings.enable_collections,
+          enable_plex_button: settings.enable_plex_button,
+          enable_label_restrictions: settings.enable_label_restrictions,
+          label_restriction_mode: settings.label_restriction_mode,
+          restricted_labels: settings.restricted_labels,
+          rating_display: settings.rating_display,
+          enable_lobby_qr: settings.enable_lobby_qr,
+          enable_chat: settings.enable_chat,
+          auto_cache_refresh: settings.auto_cache_refresh,
+        }
+      });
+    } else {
+      res.json({ settings: null });
+    }
+  } catch (error) {
+    console.error('[Admin] Error getting session settings:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ============ PROTECTED ROUTES (require admin auth) ============
+
 // Get Plex config
-router.post('/get-config', (req, res) => {
+router.post('/get-config', requireAdmin, (req, res) => {
   try {
     const db = getDb();
     const row = db.prepare('SELECT value FROM app_config WHERE key = ?').get('plex') as { value: string } | undefined;
@@ -194,7 +399,7 @@ router.post('/get-config', (req, res) => {
 });
 
 // Save Plex config
-router.post('/save-config', (req, res) => {
+router.post('/save-config', requireAdmin, (req, res) => {
   try {
     const { config } = req.body;
     if (!config) {
@@ -216,21 +421,8 @@ router.post('/save-config', (req, res) => {
   }
 });
 
-// Get session settings
-router.post('/get-session-settings', (req, res) => {
-  try {
-    const db = getDb();
-    const row = db.prepare('SELECT value FROM app_config WHERE key = ?').get('session_settings') as { value: string } | undefined;
-    
-    res.json({ settings: row ? JSON.parse(row.value) : null });
-  } catch (error) {
-    console.error('[Admin] Error getting session settings:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
 // Save session settings
-router.post('/save-session-settings', (req, res) => {
+router.post('/save-session-settings', requireAdmin, (req, res) => {
   try {
     const { settings } = req.body;
     if (!settings) {
@@ -253,7 +445,7 @@ router.post('/save-session-settings', (req, res) => {
 });
 
 // Upload custom logo
-router.post('/upload-logo', upload.single('logo'), (req, res) => {
+router.post('/upload-logo', requireAdmin, upload.single('logo'), (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
@@ -277,23 +469,20 @@ router.post('/upload-logo', upload.single('logo'), (req, res) => {
 });
 
 // Delete custom logo
-router.post('/delete-logo', (req, res) => {
+router.post('/delete-logo', requireAdmin, (req, res) => {
   try {
     const db = getDb();
     
-    // Get current logo info
     const row = db.prepare('SELECT value FROM app_config WHERE key = ?').get('custom_logo') as { value: string } | undefined;
     
     if (row) {
       const logoConfig = JSON.parse(row.value);
       
-      // Delete the file
       const filePath = path.join(UPLOADS_PATH, logoConfig.filename);
       if (fs.existsSync(filePath)) {
         fs.unlinkSync(filePath);
       }
       
-      // Remove from database
       db.prepare('DELETE FROM app_config WHERE key = ?').run('custom_logo');
     }
 
@@ -304,124 +493,13 @@ router.post('/delete-logo', (req, res) => {
   }
 });
 
-// Get custom logo config
-router.get('/get-logo', (req, res) => {
-  try {
-    const db = getDb();
-    const row = db.prepare('SELECT value FROM app_config WHERE key = ?').get('custom_logo') as { value: string } | undefined;
-    
-    if (row) {
-      const logoConfig = JSON.parse(row.value);
-      // Verify file still exists
-      const filePath = path.join(UPLOADS_PATH, logoConfig.filename);
-      if (fs.existsSync(filePath)) {
-        res.json({ logo: logoConfig });
-      } else {
-        // File doesn't exist, clean up database
-        db.prepare('DELETE FROM app_config WHERE key = ?').run('custom_logo');
-        res.json({ logo: null });
-      }
-    } else {
-      res.json({ logo: null });
-    }
-  } catch (error) {
-    console.error('[Admin] Error getting logo:', error);
-    res.status(500).json({ error: 'Failed to get logo' });
-  }
-});
-
-// Serve custom logo file
-router.get('/logo/:filename', (req, res) => {
-  try {
-    const { filename } = req.params;
-    
-    // Security check: only allow files that start with 'custom-logo'
-    if (!filename.startsWith('custom-logo')) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-    
-    // Use absolute path
-    const filePath = path.resolve(UPLOADS_PATH, filename);
-    
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: 'Logo not found' });
-    }
-    
-    // Determine content type
-    const ext = path.extname(filename).toLowerCase();
-    const contentTypes: Record<string, string> = {
-      '.png': 'image/png',
-      '.jpg': 'image/jpeg',
-      '.jpeg': 'image/jpeg',
-      '.gif': 'image/gif',
-      '.webp': 'image/webp',
-      '.svg': 'image/svg+xml',
-    };
-    
-    const contentType = contentTypes[ext] || 'application/octet-stream';
-    
-    res.set('Content-Type', contentType);
-    res.set('Cache-Control', 'public, max-age=86400');
-    
-    // Use absolute path for sendFile
-    res.sendFile(filePath, (err) => {
-      if (err) {
-        console.error('[Admin] Error sending file:', err);
-        if (!res.headersSent) {
-          res.status(500).json({ error: 'Failed to serve logo' });
-        }
-      }
-    });
-  } catch (error) {
-    console.error('[Admin] Exception serving logo:', error);
-    if (!res.headersSent) {
-      res.status(500).json({ error: 'Failed to serve logo' });
-    }
-  }
-});
-
-// ============ PWA CUSTOMIZATION ============
-
-// Get PWA settings
-router.get('/get-pwa-settings', (req, res) => {
-  try {
-    const db = getDb();
-    const row = db.prepare('SELECT value FROM app_config WHERE key = ?').get('pwa_settings') as { value: string } | undefined;
-    
-    if (row) {
-      const settings = JSON.parse(row.value);
-      // Check if icon files still exist
-      if (settings.hasCustomIcon) {
-        const icon192Path = path.join(UPLOADS_PATH, 'pwa-icon-192.png');
-        const icon512Path = path.join(UPLOADS_PATH, 'pwa-icon-512.png');
-        if (!fs.existsSync(icon192Path) || !fs.existsSync(icon512Path)) {
-          settings.hasCustomIcon = false;
-          // Update DB
-          db.prepare(`
-            INSERT INTO app_config (key, value, updated_at) 
-            VALUES (?, ?, datetime('now'))
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
-          `).run('pwa_settings', JSON.stringify(settings));
-        }
-      }
-      res.json({ settings });
-    } else {
-      res.json({ settings: null });
-    }
-  } catch (error) {
-    console.error('[Admin] Error getting PWA settings:', error);
-    res.status(500).json({ error: 'Failed to get PWA settings' });
-  }
-});
-
 // Save PWA settings (name only)
-router.post('/save-pwa-settings', (req, res) => {
+router.post('/save-pwa-settings', requireAdmin, (req, res) => {
   try {
     const { appName, appShortName } = req.body;
     
     const db = getDb();
     
-    // Get existing settings to preserve icon state
     const existing = db.prepare('SELECT value FROM app_config WHERE key = ?').get('pwa_settings') as { value: string } | undefined;
     const currentSettings = existing ? JSON.parse(existing.value) : {};
     
@@ -446,7 +524,7 @@ router.post('/save-pwa-settings', (req, res) => {
 });
 
 // Upload PWA icon
-router.post('/upload-pwa-icon', pwaIconUpload.single('icon'), async (req, res) => {
+router.post('/upload-pwa-icon', requireAdmin, pwaIconUpload.single('icon'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
@@ -456,27 +534,21 @@ router.post('/upload-pwa-icon', pwaIconUpload.single('icon'), async (req, res) =
     const icon192Path = path.join(UPLOADS_PATH, 'pwa-icon-192.png');
     const icon512Path = path.join(UPLOADS_PATH, 'pwa-icon-512.png');
 
-    // Read the uploaded file into a buffer first, so we don't depend on the file on disk
-    // after cleanup runs
     const inputBuffer = fs.readFileSync(tempPath);
 
-    // Delete old generated icon files (but NOT our temp upload)
     try { if (fs.existsSync(icon192Path)) fs.unlinkSync(icon192Path); } catch (e) { /* ignore */ }
     try { if (fs.existsSync(icon512Path)) fs.unlinkSync(icon512Path); } catch (e) { /* ignore */ }
 
-    // Generate 192x192 icon from buffer
     await sharp(inputBuffer)
       .resize(192, 192, { fit: 'cover', position: 'center' })
       .png()
       .toFile(icon192Path);
 
-    // Generate 512x512 icon from buffer
     await sharp(inputBuffer)
       .resize(512, 512, { fit: 'cover', position: 'center' })
       .png()
       .toFile(icon512Path);
 
-    // Clean up temp upload
     try {
       if (fs.existsSync(tempPath)) {
         fs.unlinkSync(tempPath);
@@ -485,7 +557,6 @@ router.post('/upload-pwa-icon', pwaIconUpload.single('icon'), async (req, res) =
       console.error('[Admin] Error cleaning up temp file:', e);
     }
 
-    // Also clean up any other leftover temp files
     try {
       const files = fs.readdirSync(UPLOADS_PATH);
       files.forEach(file => {
@@ -495,7 +566,6 @@ router.post('/upload-pwa-icon', pwaIconUpload.single('icon'), async (req, res) =
       });
     } catch (e) { /* ignore */ }
 
-    // Update DB
     const db = getDb();
     const existing = db.prepare('SELECT value FROM app_config WHERE key = ?').get('pwa_settings') as { value: string } | undefined;
     const currentSettings = existing ? JSON.parse(existing.value) : {};
@@ -514,7 +584,6 @@ router.post('/upload-pwa-icon', pwaIconUpload.single('icon'), async (req, res) =
 
     res.json({ success: true });
   } catch (error) {
-    // Clean up temp file on error
     if (req.file) {
       const tempPath = path.join(UPLOADS_PATH, req.file.filename);
       try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath); } catch (e) { /* ignore */ }
@@ -526,16 +595,14 @@ router.post('/upload-pwa-icon', pwaIconUpload.single('icon'), async (req, res) =
 });
 
 // Delete PWA icon
-router.post('/delete-pwa-icon', (req, res) => {
+router.post('/delete-pwa-icon', requireAdmin, (req, res) => {
   try {
-    // Delete icon files
     const icon192Path = path.join(UPLOADS_PATH, 'pwa-icon-192.png');
     const icon512Path = path.join(UPLOADS_PATH, 'pwa-icon-512.png');
     
     if (fs.existsSync(icon192Path)) fs.unlinkSync(icon192Path);
     if (fs.existsSync(icon512Path)) fs.unlinkSync(icon512Path);
     
-    // Also clean up any leftover temp files
     try {
       const files = fs.readdirSync(UPLOADS_PATH);
       files.forEach(file => {
@@ -545,7 +612,6 @@ router.post('/delete-pwa-icon', (req, res) => {
       });
     } catch (e) { /* ignore */ }
 
-    // Update DB
     const db = getDb();
     const existing = db.prepare('SELECT value FROM app_config WHERE key = ?').get('pwa_settings') as { value: string } | undefined;
     const currentSettings = existing ? JSON.parse(existing.value) : {};
@@ -570,17 +636,21 @@ router.post('/delete-pwa-icon', (req, res) => {
 });
 
 // Get session history
-router.get('/session-history', (req, res) => {
+router.get('/session-history', requireAdmin, (req, res) => {
   try {
     const db = getDb();
     const limit = parseInt(req.query.limit as string) || 50;
     const offset = parseInt(req.query.offset as string) || 0;
     
+    // Sanitize limit and offset to prevent abuse
+    const safeLimit = Math.min(Math.max(1, limit), 200);
+    const safeOffset = Math.max(0, offset);
+    
     const history = db.prepare(`
       SELECT * FROM session_history 
       ORDER BY completed_at DESC 
       LIMIT ? OFFSET ?
-    `).all(limit, offset) as any[];
+    `).all(safeLimit, safeOffset) as any[];
     
     const total = db.prepare('SELECT COUNT(*) as count FROM session_history').get() as { count: number };
     
@@ -598,7 +668,7 @@ router.get('/session-history', (req, res) => {
 });
 
 // Clear session history
-router.post('/clear-session-history', (req, res) => {
+router.post('/clear-session-history', requireAdmin, (req, res) => {
   try {
     const db = getDb();
     db.prepare('DELETE FROM session_history').run();
