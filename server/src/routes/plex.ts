@@ -1651,6 +1651,18 @@ router.get('/image', async (req, res) => {
     if (!imagePath) {
       return res.status(400).json({ error: 'Missing path parameter' });
     }
+
+    const ALLOWED_PATH_PREFIXES = ['/library/', '/photo/', '/:/image'];
+    const isSafePath =
+      imagePath.startsWith('/') &&
+      !imagePath.includes('..') &&
+      !imagePath.toLowerCase().includes('http') &&
+      /^[a-zA-Z0-9/\-_.%+@:,=&?]+$/.test(imagePath) &&
+      ALLOWED_PATH_PREFIXES.some(prefix => imagePath.startsWith(prefix));
+
+    if (!isSafePath) {
+      return res.status(400).json({ error: 'Invalid image path' });
+    }
     
     const config = getPlexConfig();
     if (!config?.plex_url || !config?.plex_token) {

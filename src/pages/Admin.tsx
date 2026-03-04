@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Logo } from "@/components/Logo";
-import { adminApi, plexApi, CacheRefreshProgress } from "@/lib/api";
+import { adminApi, plexApi, CacheRefreshProgress, setAdminToken } from "@/lib/api";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { AdminSettingsTab } from "@/components/admin/AdminSettingsTab";
@@ -184,6 +184,9 @@ const Admin = () => {
 
       if (error) throw new Error(error);
 
+      // Store the token for authenticated requests
+      setAdminToken(hashedPassword);
+
       toast.success("Admin password set successfully!");
       setIsPasswordSet(true);
       setIsAuthenticated(true);
@@ -203,6 +206,9 @@ const Admin = () => {
       if (error) throw new Error(error);
 
       if (data?.valid) {
+        // Store the token for authenticated requests
+        setAdminToken(hashedPassword);
+        
         setIsAuthenticated(true);
         setPassword("");
       } else {
@@ -298,11 +304,9 @@ const Admin = () => {
     setAutoCacheRefresh(enabled);
     
     try {
-      // Get current settings first
       const { data: currentData } = await adminApi.getSessionSettings();
       const currentSettings = currentData?.settings || {};
       
-      // Update with new auto_cache_refresh value
       const { error } = await adminApi.saveSessionSettings({
         ...currentSettings,
         auto_cache_refresh: enabled,
@@ -314,7 +318,6 @@ const Admin = () => {
     } catch (err) {
       console.error("Error saving auto cache refresh setting:", err);
       toast.error("Failed to save setting");
-      // Revert on error
       setAutoCacheRefresh(!enabled);
     }
   };
@@ -325,14 +328,12 @@ const Admin = () => {
       if (data) {
         setCacheProgress(data);
         
-        // Stop polling when complete or error
         if (data.phase === 'complete' || data.phase === 'error' || !data.isRunning) {
           if (progressPollRef.current) {
             clearInterval(progressPollRef.current);
             progressPollRef.current = null;
           }
           
-          // Keep showing complete state for a moment
           if (data.phase === 'complete') {
             setTimeout(() => {
               setCacheProgress(null);
@@ -356,7 +357,6 @@ const Admin = () => {
     setIsRefreshingCache(true);
     haptics.medium();
 
-    // Start polling for progress
     setCacheProgress({
       isRunning: true,
       phase: 'starting',
@@ -368,7 +368,6 @@ const Admin = () => {
       collectionsProcessed: 0,
     });
     
-    // Poll every 500ms for progress updates
     progressPollRef.current = window.setInterval(pollProgress, 500);
 
     try {
@@ -514,7 +513,6 @@ const Admin = () => {
           <SessionHistoryTab />
         ) : (
           <>
-            {/* Version Info Card - Always show at top of Connection tab */}
             <VersionInfo />
 
             <motion.div
@@ -662,7 +660,6 @@ const Admin = () => {
                       </div>
                     )}
                     
-                    {/* Last refresh info */}
                     {lastCacheRefresh && (
                       <div className={cn(
                         "p-3 rounded-lg text-sm",
@@ -724,7 +721,6 @@ const Admin = () => {
                   )}
                 </Button>
 
-                {/* Auto Cache Refresh Toggle */}
                 <div className="flex items-center justify-between pt-2 border-t border-secondary">
                   <div>
                     <p className="font-medium text-foreground text-sm">Auto Refresh</p>

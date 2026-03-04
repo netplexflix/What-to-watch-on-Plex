@@ -252,7 +252,7 @@ const TimedResults = () => {
         let userHasVoted = false;
         
         try {
-          const votesResult = await sessionsApi.getFinalVotes(sessionId);
+          const votesResult = await sessionsApi.getFinalVotes(session.id);
 
           if (votesResult.data) {
             setVotingStatus({ 

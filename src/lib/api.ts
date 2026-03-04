@@ -1,5 +1,19 @@
 // File: src/lib/api.ts
 const API_BASE = '/api';
+const ADMIN_TOKEN_KEY = 'wtw_admin_token';
+
+// Store/retrieve admin token
+export function setAdminToken(token: string) {
+  sessionStorage.setItem(ADMIN_TOKEN_KEY, token);
+}
+
+export function getAdminToken(): string | null {
+  return sessionStorage.getItem(ADMIN_TOKEN_KEY);
+}
+
+export function clearAdminToken() {
+  sessionStorage.removeItem(ADMIN_TOKEN_KEY);
+}
 
 interface ApiResponse<T> {
   data?: T;
@@ -11,12 +25,17 @@ async function fetchApi<T>(
   options: RequestInit = {}
 ): Promise<ApiResponse<T>> {
   try {
+    const { headers: optionHeaders, ...restOptions } = options;
     const response = await fetch(`${API_BASE}${endpoint}`, {
+      ...restOptions,
       headers: {
         'Content-Type': 'application/json',
-        ...options.headers,
+        ...(optionHeaders instanceof Headers
+          ? Object.fromEntries(optionHeaders.entries())
+          : Array.isArray(optionHeaders)
+            ? Object.fromEntries(optionHeaders)
+            : optionHeaders),
       },
-      ...options,
     });
 
     if (!response.ok) {
@@ -31,7 +50,58 @@ async function fetchApi<T>(
   }
 }
 
-// Special fetch for file uploads (no JSON content-type)
+// Authenticated fetch for admin endpoints
+async function fetchApiAdmin<T>(
+  endpoint: string,
+  options: RequestInit = {}
+): Promise<ApiResponse<T>> {
+  const token = getAdminToken();
+  const { headers: optionHeaders, ...restOptions } = options;
+
+  return fetchApi<T>(endpoint, {
+    ...restOptions,
+    headers: {
+      ...(optionHeaders instanceof Headers
+        ? Object.fromEntries(optionHeaders.entries())
+        : Array.isArray(optionHeaders)
+          ? Object.fromEntries(optionHeaders)
+          : optionHeaders),
+      ...(token ? { 'X-Admin-Token': token } : {}),
+    },
+  });
+}
+
+// Authenticated fetch for admin file uploads
+async function fetchApiAdminFormData<T>(
+  endpoint: string,
+  formData: FormData
+): Promise<ApiResponse<T>> {
+  try {
+    const token = getAdminToken();
+    const headers: Record<string, string> = {};
+    if (token) {
+      headers['X-Admin-Token'] = token;
+    }
+    
+    const response = await fetch(`${API_BASE}${endpoint}`, {
+      method: 'POST',
+      headers,
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      return { error: errorData.error || `HTTP ${response.status}` };
+    }
+
+    const data = await response.json();
+    return { data };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : 'Network error' };
+  }
+}
+
+// Special fetch for file uploads (no JSON content-type, no auth)
 async function fetchApiFormData<T>(
   endpoint: string,
   formData: FormData
@@ -73,6 +143,32 @@ async function fetchApiGet<T>(endpoint: string): Promise<ApiResponse<T>> {
   }
 }
 
+// Authenticated GET for admin endpoints
+async function fetchApiAdminGet<T>(endpoint: string): Promise<ApiResponse<T>> {
+  try {
+    const token = getAdminToken();
+    const headers: Record<string, string> = {};
+    if (token) {
+      headers['X-Admin-Token'] = token;
+    }
+    
+    const response = await fetch(`${API_BASE}${endpoint}`, {
+      method: 'GET',
+      headers,
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      return { error: errorData.error || `HTTP ${response.status}` };
+    }
+
+    const data = await response.json();
+    return { data };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : 'Network error' };
+  }
+}
+
 export const adminApi = {
   checkPasswordStatus: () =>
     fetchApi<{ isSet: boolean }>('/admin/check-password-status', { method: 'POST' }),
@@ -89,20 +185,22 @@ export const adminApi = {
       body: JSON.stringify({ passwordHash }),
     }),
 
+  // Protected endpoints use fetchApiAdmin
   getConfig: () =>
-    fetchApi<{ config: any }>('/admin/get-config', { method: 'POST' }),
+    fetchApiAdmin<{ config: any }>('/admin/get-config', { method: 'POST' }),
 
   saveConfig: (config: any) =>
-    fetchApi<{ success: boolean }>('/admin/save-config', {
+    fetchApiAdmin<{ success: boolean }>('/admin/save-config', {
       method: 'POST',
       body: JSON.stringify({ config }),
     }),
 
+  // Public - needed by session participants
   getSessionSettings: () =>
     fetchApi<{ settings: any }>('/admin/get-session-settings', { method: 'POST' }),
 
   saveSessionSettings: (settings: any) =>
-    fetchApi<{ success: boolean }>('/admin/save-session-settings', {
+    fetchApiAdmin<{ success: boolean }>('/admin/save-session-settings', {
       method: 'POST',
       body: JSON.stringify({ settings }),
     }),
@@ -110,21 +208,22 @@ export const adminApi = {
   uploadLogo: (file: File) => {
     const formData = new FormData();
     formData.append('logo', file);
-    return fetchApiFormData<{ success: boolean; path: string }>('/admin/upload-logo', formData);
+    return fetchApiAdminFormData<{ success: boolean; path: string }>('/admin/upload-logo', formData);
   },
 
   deleteLogo: () =>
-    fetchApi<{ success: boolean }>('/admin/delete-logo', { method: 'POST' }),
+    fetchApiAdmin<{ success: boolean }>('/admin/delete-logo', { method: 'POST' }),
 
+  // Public - needed for home page
   getLogo: () =>
     fetchApiGet<{ logo: { path: string; filename: string } | null }>('/admin/get-logo'),
 
-  // PWA customization
+  // Public - needed for manifest
   getPwaSettings: () =>
     fetchApiGet<{ settings: { appName: string; appShortName: string; hasCustomIcon: boolean } | null }>('/admin/get-pwa-settings'),
 
   savePwaSettings: (appName: string, appShortName: string) =>
-    fetchApi<{ success: boolean }>('/admin/save-pwa-settings', {
+    fetchApiAdmin<{ success: boolean }>('/admin/save-pwa-settings', {
       method: 'POST',
       body: JSON.stringify({ appName, appShortName }),
     }),
@@ -132,17 +231,17 @@ export const adminApi = {
   uploadPwaIcon: (file: File) => {
     const formData = new FormData();
     formData.append('icon', file);
-    return fetchApiFormData<{ success: boolean }>('/admin/upload-pwa-icon', formData);
+    return fetchApiAdminFormData<{ success: boolean }>('/admin/upload-pwa-icon', formData);
   },
 
   deletePwaIcon: () =>
-    fetchApi<{ success: boolean }>('/admin/delete-pwa-icon', { method: 'POST' }),
+    fetchApiAdmin<{ success: boolean }>('/admin/delete-pwa-icon', { method: 'POST' }),
 
   getSessionHistory: (limit = 50, offset = 0) =>
-    fetchApiGet<{ history: any[]; total: number }>(`/admin/session-history?limit=${limit}&offset=${offset}`),
+    fetchApiAdminGet<{ history: any[]; total: number }>(`/admin/session-history?limit=${limit}&offset=${offset}`),
 
   clearSessionHistory: () =>
-    fetchApi<{ success: boolean }>('/admin/clear-session-history', { method: 'POST' }),
+    fetchApiAdmin<{ success: boolean }>('/admin/clear-session-history', { method: 'POST' }),
 };
 
 export interface CacheRefreshProgress {

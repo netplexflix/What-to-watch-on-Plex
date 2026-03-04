@@ -154,9 +154,12 @@ router.get('/code/:code', (req, res) => {
       }
     }
     
+    // Strip sensitive token before sending to clients
+    const { host_plex_token: _hpt, ...safeSession } = session;
+
     res.json({ 
       session: {
-        ...session,
+        ...safeSession,
         preferences,
         timed_duration: session.timed_duration || null,
         timer_end_at: session.timer_end_at || null,
@@ -192,9 +195,12 @@ router.get('/:id', (req, res) => {
       }
     }
     
+    // Strip sensitive token before sending to clients
+    const { host_plex_token: _hpt, ...safeSession } = session;
+
     res.json({ 
       session: {
-        ...session,
+        ...safeSession,
         preferences,
         timed_duration: session.timed_duration || null,
         timer_end_at: session.timer_end_at || null,
@@ -310,10 +316,13 @@ router.patch('/:id', (req, res) => {
         preferences = {};
       }
     }
+
+    // Strip sensitive token before sending to clients
+    const { host_plex_token: _hpt, ...safeSession } = session || {};
     
     res.json({ 
       session: session ? {
-        ...session,
+        ...safeSession,
         preferences,
         timed_duration: session.timed_duration || null,
         timer_end_at: session.timer_end_at || null,
@@ -371,13 +380,16 @@ router.get('/:id/participants', (req, res) => {
     
     const participants = db.prepare('SELECT * FROM session_participants WHERE session_id = ?').all(id);
     
-    // Parse preferences JSON
-    const parsed = participants.map((p: any) => ({
-      ...p,
-      preferences: p.preferences ? JSON.parse(p.preferences) : null,
-      is_guest: !!p.is_guest,
-      questions_completed: !!p.questions_completed,
-    }));
+    // Parse preferences JSON, and strip sensitive plex_token before sending to clients
+    const parsed = participants.map((p: any) => {
+      const { plex_token: _pt, ...safeParticipant } = p;
+      return {
+        ...safeParticipant,
+        preferences: p.preferences ? JSON.parse(p.preferences) : null,
+        is_guest: !!p.is_guest,
+        questions_completed: !!p.questions_completed,
+      };
+    });
     
     res.json({ participants: parsed });
   } catch (error) {
@@ -424,9 +436,10 @@ router.patch('/participants/:id', (req, res) => {
     }
     
     const participant = db.prepare('SELECT * FROM session_participants WHERE id = ?').get(id) as any;
+    const { plex_token: _pt, ...safeParticipant } = participant || {};
     res.json({
       participant: participant ? {
-        ...participant,
+        ...safeParticipant,
         preferences: participant.preferences ? JSON.parse(participant.preferences) : null,
         is_guest: !!participant.is_guest,
         questions_completed: !!participant.questions_completed,
@@ -868,11 +881,17 @@ router.get('/:id/final-votes', (req, res) => {
 });
 
 // Get app config (for session settings)
+const SAFE_CONFIG_KEYS = new Set(['session_settings', 'pwa_settings']);
+
 router.get('/config/:key', (req, res) => {
   try {
     const { key } = req.params;
+
+    if (!SAFE_CONFIG_KEYS.has(key)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
     const db = getDb();
-    
     const row = db.prepare('SELECT value FROM app_config WHERE key = ?').get(key) as { value: string } | undefined;
     
     res.json({ value: row ? JSON.parse(row.value) : null });
