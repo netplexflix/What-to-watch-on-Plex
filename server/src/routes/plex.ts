@@ -1001,19 +1001,136 @@ router.post('/get-watched-keys', async (req, res) => {
     if (!config?.plex_url) {
       return res.json({ watchedKeys: [] });
     }
-    
+
     const { userPlexToken } = req.body;
     if (!userPlexToken) {
       return res.json({ watchedKeys: [] });
     }
-    
+
     const selectedLibraries = config.libraries || [];
     const watchedKeys = await getWatchedItems(config.plex_url, userPlexToken, selectedLibraries);
-    
+
     res.json({ watchedKeys: Array.from(watchedKeys) });
   } catch (error) {
     console.error('Error getting watched keys:', error);
     res.json({ watchedKeys: [] });
+  }
+});
+
+// Get watched keys for a participant (token looked up server-side)
+router.get('/session/:sessionId/watched-keys/:participantId', async (req, res) => {
+  try {
+    const config = getPlexConfig();
+    if (!config?.plex_url) {
+      return res.json({ watchedKeys: [] });
+    }
+
+    const { sessionId, participantId } = req.params;
+    const db = getDb();
+
+    // Verify participant belongs to this session and get their token
+    const participant = db.prepare(
+      'SELECT plex_token FROM session_participants WHERE id = ? AND session_id = ?'
+    ).get(participantId, sessionId) as { plex_token: string | null } | undefined;
+
+    if (!participant?.plex_token) {
+      return res.json({ watchedKeys: [] });
+    }
+
+    const selectedLibraries = config.libraries || [];
+    const watchedKeys = await getWatchedItems(config.plex_url, participant.plex_token, selectedLibraries);
+
+    res.json({ watchedKeys: Array.from(watchedKeys) });
+  } catch (error) {
+    console.error('Error getting watched keys for participant:', error);
+    res.json({ watchedKeys: [] });
+  }
+});
+
+// Get watchlist keys for a session (host token looked up server-side)
+router.get('/session/:sessionId/watchlist-keys', async (req, res) => {
+  try {
+    const config = getPlexConfig();
+    if (!config?.plex_url || !config?.plex_token) {
+      return res.status(400).json({ error: 'Plex not configured' });
+    }
+
+    const { sessionId } = req.params;
+    const db = getDb();
+
+    const session = db.prepare(
+      'SELECT host_plex_token, use_watchlist FROM sessions WHERE id = ?'
+    ).get(sessionId) as { host_plex_token: string | null; use_watchlist: number } | undefined;
+
+    if (!session?.use_watchlist || !session?.host_plex_token) {
+      return res.json({ watchlistKeys: [], watchlistCount: 0, matchedCount: 0 });
+    }
+
+    console.log('[Plex] Fetching watchlist for session host (server-side)...');
+
+    const watchlistItems = await fetchAllWatchlistItems(session.host_plex_token);
+    console.log(`[Plex] Found ${watchlistItems.length} total items in host's watchlist`);
+
+    const watchlistGuids = new Set<string>();
+    const watchlistTitles = new Map<string, any>();
+
+    for (const item of watchlistItems) {
+      const key = `${item.title?.toLowerCase()}:${item.year || ''}`;
+      watchlistTitles.set(key, item);
+
+      if (item.Guid) {
+        for (const guid of item.Guid) {
+          watchlistGuids.add(guid.id);
+        }
+      }
+      if (item.guid) {
+        watchlistGuids.add(item.guid);
+      }
+      if (item.ratingKey) {
+        watchlistGuids.add(`plex://movie/${item.ratingKey}`);
+        watchlistGuids.add(`plex://show/${item.ratingKey}`);
+      }
+    }
+
+    const selectedLibraries = config.libraries || [];
+    const sortedLibraryKeys = [...selectedLibraries].sort().join(',');
+
+    const cached = db.prepare(
+      'SELECT items FROM media_items_cache WHERE library_keys = ? AND media_type = ?'
+    ).get(sortedLibraryKeys, 'both') as { items: string } | undefined;
+
+    const matchedKeys: string[] = [];
+
+    if (cached?.items) {
+      const localItems = JSON.parse(cached.items);
+      for (const localItem of localItems) {
+        const key = `${localItem.title?.toLowerCase()}:${localItem.year || ''}`;
+        if (watchlistTitles.has(key)) {
+          matchedKeys.push(localItem.ratingKey);
+          continue;
+        }
+
+        if (localItem.guids && Array.isArray(localItem.guids)) {
+          for (const guid of localItem.guids) {
+            if (watchlistGuids.has(guid)) {
+              matchedKeys.push(localItem.ratingKey);
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    console.log(`[Plex] Matched ${matchedKeys.length} watchlist items to local library`);
+
+    res.json({
+      watchlistKeys: matchedKeys,
+      watchlistCount: watchlistItems.length,
+      matchedCount: matchedKeys.length,
+    });
+  } catch (error) {
+    console.error('Error getting watchlist keys for session:', error);
+    res.status(500).json({ error: 'Failed to get watchlist' });
   }
 });
 
@@ -1539,6 +1656,132 @@ router.post('/check-watchlist', async (req, res) => {
   } catch (error) {
     console.error('Error checking watchlist:', error);
     res.json({ inWatchlist: false });
+  }
+});
+
+// Check if item is in participant's watchlist (token looked up server-side)
+router.post('/session/:sessionId/check-watchlist/:participantId', async (req, res) => {
+  try {
+    const { sessionId, participantId } = req.params;
+    const { ratingKey } = req.body;
+    if (!ratingKey) {
+      return res.status(400).json({ error: 'Rating key required' });
+    }
+
+    const config = getPlexConfig();
+    if (!config?.plex_url || !config?.plex_token) {
+      return res.status(400).json({ error: 'Plex not configured' });
+    }
+
+    const db = getDb();
+    const participant = db.prepare(
+      'SELECT plex_token FROM session_participants WHERE id = ? AND session_id = ?'
+    ).get(participantId, sessionId) as { plex_token: string | null } | undefined;
+
+    if (!participant?.plex_token) {
+      return res.json({ inWatchlist: false });
+    }
+
+    const itemInfo = await getItemMetadata(config.plex_url, config.plex_token, ratingKey);
+    if (!itemInfo.title) {
+      return res.json({ inWatchlist: false });
+    }
+
+    const watchlistItems = await fetchAllWatchlistItems(participant.plex_token);
+
+    let inWatchlist = watchlistItems.some((wItem: any) =>
+      wItem.title?.toLowerCase() === itemInfo.title?.toLowerCase() &&
+      (!wItem.year || !itemInfo.year || Math.abs(wItem.year - itemInfo.year) <= 1)
+    );
+
+    if (!inWatchlist && itemInfo.guids.length > 0) {
+      for (const wItem of watchlistItems) {
+        if (wItem.Guid && Array.isArray(wItem.Guid)) {
+          for (const guidObj of wItem.Guid) {
+            if (itemInfo.guids.includes(guidObj.id)) {
+              inWatchlist = true;
+              break;
+            }
+          }
+        }
+        if (!inWatchlist && wItem.guid && itemInfo.guids.includes(wItem.guid)) {
+          inWatchlist = true;
+        }
+        if (inWatchlist) break;
+      }
+    }
+
+    res.json({ inWatchlist });
+  } catch (error) {
+    console.error('Error checking watchlist for participant:', error);
+    res.json({ inWatchlist: false });
+  }
+});
+
+// Add item to participant's watchlist (token looked up server-side)
+router.post('/session/:sessionId/add-to-watchlist/:participantId', async (req, res) => {
+  try {
+    const { sessionId, participantId } = req.params;
+    const { ratingKey } = req.body;
+    if (!ratingKey) {
+      return res.status(400).json({ error: 'Rating key required' });
+    }
+
+    const config = getPlexConfig();
+    if (!config?.plex_url || !config?.plex_token) {
+      return res.status(400).json({ error: 'Plex not configured' });
+    }
+
+    const db = getDb();
+    const participant = db.prepare(
+      'SELECT plex_token FROM session_participants WHERE id = ? AND session_id = ?'
+    ).get(participantId, sessionId) as { plex_token: string | null } | undefined;
+
+    if (!participant?.plex_token) {
+      return res.status(403).json({ error: 'Not a Plex user' });
+    }
+
+    const itemInfo = await getItemMetadata(config.plex_url, config.plex_token, ratingKey);
+    if (!itemInfo.title) {
+      return res.status(404).json({ error: 'Item not found' });
+    }
+
+    const watchlistRatingKey = await findWatchlistRatingKey(
+      participant.plex_token,
+      itemInfo.title,
+      itemInfo.year,
+      itemInfo.type,
+      itemInfo.guids
+    );
+
+    if (!watchlistRatingKey) {
+      return res.status(404).json({
+        error: 'Could not find item on Plex. It may not be in the Plex database.',
+        details: `Searched for: "${itemInfo.title}" (${itemInfo.year})`
+      });
+    }
+
+    // Try adding to watchlist
+    const addResponse = await fetch(
+      `https://discover.provider.plex.tv/actions/addToWatchlist?ratingKey=${watchlistRatingKey}`,
+      {
+        method: 'PUT',
+        headers: {
+          'Accept': 'application/json',
+          'X-Plex-Token': participant.plex_token,
+          'X-Plex-Client-Identifier': 'what-to-watch',
+        },
+      }
+    );
+
+    if (addResponse.ok || addResponse.status === 200 || addResponse.status === 201) {
+      return res.json({ success: true });
+    }
+
+    return res.status(500).json({ error: 'Failed to add to watchlist' });
+  } catch (error) {
+    console.error('Error adding to watchlist for participant:', error);
+    res.status(500).json({ error: 'Failed to add to watchlist' });
   }
 });
 

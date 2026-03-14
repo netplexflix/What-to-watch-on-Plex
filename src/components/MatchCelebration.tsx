@@ -5,7 +5,7 @@ import { PartyPopper, Play, Clock, Star, Calendar, Users, Popcorn, Globe, ListPl
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useHaptics } from "@/hooks/useHaptics";
-import { plexApi, sessionsApi } from "@/lib/api";
+import { sessionsApi } from "@/lib/api";
 import { getLocalSession } from "@/lib/sessionStore";
 import { toast } from "sonner";
 import type { PlexItem } from "@/types/session";
@@ -43,20 +43,20 @@ export const MatchCelebration = ({
   const [inWatchlist, setInWatchlist] = useState(false);
   const [isAddingToWatchlist, setIsAddingToWatchlist] = useState(false);
   const [isCheckingWatchlist, setIsCheckingWatchlist] = useState(false);
-  const [plexToken, setPlexToken] = useState<string | null>(null);
+  const [isPlexUser, setIsPlexUser] = useState(false);
   const [hasCheckedToken, setHasCheckedToken] = useState(false);
   const haptics = useHaptics();
   const hasTriggeredHaptic = useRef(false);
   const localSession = getLocalSession();
 
-  // Get the participant's plex token
+  // Check if participant is a Plex user (not a guest)
   useEffect(() => {
-    const checkPlexToken = async () => {
+    const checkPlexUser = async () => {
       if (!localSession?.sessionId || !localSession?.participantId) {
         setHasCheckedToken(true);
         return;
       }
-      
+
       try {
         const { data, error } = await sessionsApi.getParticipants(localSession.sessionId);
         if (error) {
@@ -64,16 +64,16 @@ export const MatchCelebration = ({
           setHasCheckedToken(true);
           return;
         }
-        
+
         if (data?.participants) {
           const currentParticipant = data.participants.find(
             (p: any) => p.id === localSession.participantId
           );
-          if (currentParticipant?.plex_token) {
-            console.log('[MatchCelebration] Found plex token for participant');
-            setPlexToken(currentParticipant.plex_token);
+          if (currentParticipant && !currentParticipant.is_guest) {
+            console.log('[MatchCelebration] Participant is a Plex user');
+            setIsPlexUser(true);
           } else {
-            console.log('[MatchCelebration] No plex token for participant (guest user)');
+            console.log('[MatchCelebration] Participant is a guest user');
           }
         }
       } catch (err) {
@@ -82,8 +82,8 @@ export const MatchCelebration = ({
         setHasCheckedToken(true);
       }
     };
-    
-    checkPlexToken();
+
+    checkPlexUser();
   }, [localSession?.sessionId, localSession?.participantId]);
 
   useEffect(() => {
@@ -107,19 +107,19 @@ export const MatchCelebration = ({
     };
   }, [haptics]);
 
-  // Check if item is in watchlist when we have a plex token
+  // Check if item is in watchlist when we have a plex user
   useEffect(() => {
-    if (plexToken && item.ratingKey && hasCheckedToken) {
+    if (isPlexUser && item.ratingKey && hasCheckedToken) {
       checkWatchlistStatus();
     }
-  }, [plexToken, item.ratingKey, hasCheckedToken]);
+  }, [isPlexUser, item.ratingKey, hasCheckedToken]);
 
   const checkWatchlistStatus = async () => {
-    if (!plexToken) return;
-    
+    if (!isPlexUser || !localSession?.sessionId || !localSession?.participantId) return;
+
     setIsCheckingWatchlist(true);
     try {
-      const { data, error } = await plexApi.checkWatchlist(plexToken, item.ratingKey);
+      const { data, error } = await sessionsApi.checkWatchlist(localSession.sessionId, localSession.participantId, item.ratingKey);
       if (error) {
         console.error('[MatchCelebration] Error checking watchlist:', error);
       } else if (data) {
@@ -134,15 +134,15 @@ export const MatchCelebration = ({
   };
 
   const handleAddToWatchlist = async () => {
-    if (!plexToken || inWatchlist || isAddingToWatchlist) return;
-    
+    if (!isPlexUser || !localSession?.sessionId || !localSession?.participantId || inWatchlist || isAddingToWatchlist) return;
+
     setIsAddingToWatchlist(true);
     haptics.medium();
-    
+
     try {
-      const { error } = await plexApi.addToWatchlist(plexToken, item.ratingKey);
+      const { error } = await sessionsApi.addToWatchlist(localSession.sessionId, localSession.participantId, item.ratingKey);
       if (error) throw new Error(error);
-      
+
       setInWatchlist(true);
       haptics.success();
       toast.success('Added to watchlist!');
@@ -208,7 +208,7 @@ export const MatchCelebration = ({
   };
 
   // Show watchlist button for Plex users (after we've checked for token)
-  const showWatchlistButton = hasCheckedToken && plexToken !== null;
+  const showWatchlistButton = hasCheckedToken && isPlexUser;
 
   return (
     <div className={cn("relative flex flex-col items-center pt-4 pb-8 px-6 overflow-hidden", className)}>
