@@ -35,9 +35,9 @@ function countSessionMatches(db: any, sessionId: string): number {
 // Create session
 router.post('/create', (req, res) => {
   try {
-    console.log('[Sessions] Create request body:', JSON.stringify(req.body));
-    
     const { mediaType, displayName, isGuest, plexToken, timedDuration, useWatchlist, matchTarget } = req.body;
+    const { plexToken: _logToken, ...safeLogBody } = req.body;
+    console.log('[Sessions] Create request body:', JSON.stringify(safeLogBody));
     
     // Validate required fields
     if (!displayName || typeof displayName !== 'string' || !displayName.trim()) {
@@ -360,12 +360,14 @@ router.post('/:id/join', (req, res) => {
       VALUES (?, ?, ?, ?, ?, datetime('now'))
     `).run(participantId, id, displayName.trim(), isGuest ? 1 : 0, plexToken || null);
     
-    const participant = db.prepare('SELECT * FROM session_participants WHERE id = ?').get(participantId);
-    
-    // Broadcast new participant
-    broadcastToSession(id, 'participant_joined', { participant });
-    
-    res.json({ participant });
+    const participant = db.prepare('SELECT * FROM session_participants WHERE id = ?').get(participantId) as any;
+
+    // Strip sensitive token before broadcasting and responding
+    const { plex_token: _pt, ...safeParticipant } = participant || {};
+
+    broadcastToSession(id, 'participant_joined', { participant: safeParticipant });
+
+    res.json({ participant: safeParticipant });
   } catch (error) {
     console.error('Error joining session:', error);
     res.status(500).json({ error: 'Failed to join session' });
