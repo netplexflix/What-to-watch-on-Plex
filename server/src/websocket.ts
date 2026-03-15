@@ -1,5 +1,6 @@
 ///server/src/websocket.ts
 import { WebSocketServer, WebSocket } from 'ws';
+import { getDb } from './db.js';
 
 interface Client {
   ws: WebSocket;
@@ -45,15 +46,30 @@ function handleMessage(ws: WebSocket, message: any) {
 
   switch (message.type) {
     case 'subscribe':
-      if (message.sessionId) {
+      if (message.sessionId && message.participantId) {
+        // Verify participant belongs to this session
+        try {
+          const db = getDb();
+          const valid = db.prepare(
+            'SELECT 1 FROM session_participants WHERE id = ? AND session_id = ?'
+          ).get(message.participantId, message.sessionId);
+          if (!valid) {
+            ws.send(JSON.stringify({ type: 'error', message: 'Invalid session or participant' }));
+            break;
+          }
+        } catch (e) {
+          ws.send(JSON.stringify({ type: 'error', message: 'Subscription validation failed' }));
+          break;
+        }
+
         client.sessionId = message.sessionId;
         client.participantId = message.participantId;
-        
+
         if (!sessionSubscriptions.has(message.sessionId)) {
           sessionSubscriptions.set(message.sessionId, new Set());
         }
         sessionSubscriptions.get(message.sessionId)!.add(ws);
-        
+
         ws.send(JSON.stringify({ type: 'subscribed', sessionId: message.sessionId }));
       }
       break;

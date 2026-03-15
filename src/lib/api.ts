@@ -469,4 +469,22 @@ export const sessionsApi = {
 
   getCachedMedia: (mediaType: string) =>
     fetchApi<{ items: any[] }>(`/sessions/cache/media?mediaType=${mediaType}`),
+
+  getWatchedKeys: (sessionId: string, participantId: string) =>
+    fetchApiGet<{ watchedKeys: string[] }>(`/plex/session/${sessionId}/watched-keys/${participantId}`),
+
+  getWatchlistKeys: (sessionId: string) =>
+    fetchApiGet<{ watchlistKeys: string[]; watchlistCount: number; matchedCount: number }>(`/plex/session/${sessionId}/watchlist-keys`),
+
+  checkWatchlist: (sessionId: string, participantId: string, ratingKey: string) =>
+    fetchApi<{ inWatchlist: boolean }>(`/plex/session/${sessionId}/check-watchlist/${participantId}`, {
+      method: 'POST',
+      body: JSON.stringify({ ratingKey }),
+    }),
+
+  addToWatchlist: (sessionId: string, participantId: string, ratingKey: string) =>
+    fetchApi<{ success: boolean }>(`/plex/session/${sessionId}/add-to-watchlist/${participantId}`, {
+      method: 'POST',
+      body: JSON.stringify({ ratingKey }),
+    }),
 };

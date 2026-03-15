@@ -460,7 +460,7 @@ const Swipe = () => {
     };
   }, []);
 
-  const loadMediaItems = useCallback(async (sid: string, mediaType?: string | null, useWatchlist?: boolean, hostPlexToken?: string | null) => {
+  const loadMediaItems = useCallback(async (sid: string, mediaType?: string | null, useWatchlist?: boolean) => {
     if (itemsLoadedRef.current) return;
     
     try {
@@ -512,17 +512,17 @@ const Swipe = () => {
       orderModeRef.current = orderMode;
 
       const currentParticipant = mappedParticipants.find(p => p.id === localSession?.participantId);
-      const userPlexToken = currentParticipant?.plex_token;
+      const isPlexUser = currentParticipant && !currentParticipant.is_guest;
 
       setLoadingMessage("Loading media from cache...");
       
       let fetchedItems: any[] = [];
       
       // Check if this is a watchlist-based session
-      if (useWatchlist && hostPlexToken) {
+      if (useWatchlist) {
         setLoadingMessage("Loading from watchlist...");
         try {
-          const { data: watchlistData } = await plexApi.getWatchlist(hostPlexToken);
+          const { data: watchlistData } = await sessionsApi.getWatchlistKeys(sid);
           if (watchlistData?.watchlistKeys && watchlistData.watchlistKeys.length > 0) {
             const { data: cachedData } = await sessionsApi.getCachedMedia(mediaType || 'both');
             if (cachedData?.items) {
@@ -547,8 +547,7 @@ const Swipe = () => {
           setLoadingMessage("Fetching media from Plex...");
           const { data: mediaData } = await plexApi.getMedia(
             mediaType || 'both',
-            aggregatedFilters,
-            userPlexToken || undefined
+            aggregatedFilters
           );
           fetchedItems = mediaData?.items || [];
           console.log(`[Swipe] Loaded ${fetchedItems.length} items from Plex API`);
@@ -719,16 +718,16 @@ const Swipe = () => {
       }
 
       // Filter watched items
-      if (userPlexToken) {
+      if (isPlexUser && localSession?.participantId) {
         setLoadingMessage("Filtering watched items...");
         try {
-          const { data: watchedData } = await plexApi.getWatchedKeys(userPlexToken);
+          const { data: watchedData } = await sessionsApi.getWatchedKeys(sid, localSession.participantId);
           if (watchedData?.watchedKeys && watchedData.watchedKeys.length > 0) {
             const watchedSet = new Set(watchedData.watchedKeys);
             const beforeCount = orderedItems.length;
-            
+
             orderedItems = orderedItems.filter((item) => !watchedSet.has(item.ratingKey));
-            
+
             console.log(`[Swipe] Filtered out ${beforeCount - orderedItems.length} watched items`);
           }
         } catch (err) {
@@ -843,7 +842,7 @@ const Swipe = () => {
         } else if (!itemsLoadedRef.current) {
           setParticipants(currentParticipants);
           participantsRef.current = currentParticipants;
-          await loadMediaItems(session.id, session.media_type, session.use_watchlist, session.host_plex_token);
+          await loadMediaItems(session.id, session.media_type, session.use_watchlist);
         }
       } catch (error) {
         console.error("[Swipe] Error loading session:", error);
@@ -876,7 +875,7 @@ const Swipe = () => {
           participantsRef.current = currentParticipants;
           
           const { data: sessionData } = await sessionsApi.getById(sid);
-          await loadMediaItems(sid, mediaTypeRef.current, sessionData?.session?.use_watchlist, sessionData?.session?.host_plex_token);
+          await loadMediaItems(sid, mediaTypeRef.current, sessionData?.session?.use_watchlist);
         }
       }
     });
