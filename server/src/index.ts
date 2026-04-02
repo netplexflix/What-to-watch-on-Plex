@@ -8,11 +8,12 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { initDatabase, getDb } from './db.js';
 import { adminRoutes } from './routes/admin.js';
-import { plexRoutes } from './routes/plex.js';
+import { plexRoutes, performCacheRefreshDirect } from './routes/plex.js';
 import { sessionRoutes } from './routes/sessions.js';
 import { versionRoutes } from './routes/version.js';
 import { setupWebSocket } from './websocket.js';
 import { APP_VERSION } from './version.js';
+import { initEncryption } from './services/encryption.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -25,14 +26,85 @@ const PORT = process.env.PORT || 3000;
 const DATA_PATH = process.env.DATA_PATH || path.join(__dirname, '../../data');
 const UPLOADS_PATH = path.resolve(DATA_PATH, 'uploads');
 
-// Initialize database
+// Initialize encryption before database (migration needs encryption)
+initEncryption(DATA_PATH);
+
+// Initialize database (runs migrations including token encryption)
 initDatabase(DATA_PATH);
 
 // Middleware
-app.use(cors());
-app.use(express.json({ limit: '50mb' }));
+
+// CORS: restrict origins unless CORS_ORIGINS env var is set
+const ALLOWED_ORIGINS = process.env.CORS_ORIGINS
+  ? process.env.CORS_ORIGINS.split(',').map(o => o.trim()).filter(Boolean)
+  : null;
+
+// Database-stored allowed origins (managed via admin UI)
+let cachedCorsOrigins: string[] = [];
+
+export function loadCorsOrigins() {
+  try {
+    const db = getDb();
+    const row = db.prepare("SELECT value FROM app_config WHERE key = 'cors_origins'").get() as any;
+    cachedCorsOrigins = row ? JSON.parse(row.value) : [];
+  } catch {
+    cachedCorsOrigins = [];
+  }
+}
+
+loadCorsOrigins();
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no Origin header (same-origin, curl, mobile apps)
+    if (!origin) return callback(null, true);
+
+    // Always allow localhost/loopback origins
+    try {
+      const url = new URL(origin);
+      if (['localhost', '127.0.0.1', '::1'].includes(url.hostname)) {
+        return callback(null, true);
+      }
+    } catch {}
+
+    // Check env var whitelist
+    if (ALLOWED_ORIGINS && ALLOWED_ORIGINS.includes(origin)) {
+      return callback(null, true);
+    }
+
+    // Check database-stored whitelist (managed via admin UI)
+    if (cachedCorsOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error('Not allowed by CORS'));
+  },
+}));
+
+// Security headers
+app.use((req, res, next) => {
+  res.set('X-Content-Type-Options', 'nosniff');
+  res.set('X-Frame-Options', 'SAMEORIGIN');
+  res.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.set('Content-Security-Policy',
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss: https://plex.tv; font-src 'self';"
+  );
+  next();
+});
+
+app.use(express.json({ limit: '1mb' }));
 
 // ============ DYNAMIC PWA ROUTES (before static files) ============
+
+// HTML entity escaping to prevent injection via user-controlled strings
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
 
 // Helper to get PWA settings from DB
 function getPwaSettings(): { appName: string; appShortName: string; hasCustomIcon: boolean } {
@@ -255,11 +327,11 @@ app.get('*', (req, res) => {
       let html = fs.readFileSync(indexPath, 'utf-8');
       
       const pwaSettings = getPwaSettings();
-      const appName = pwaSettings.appName || 'What to Watch?';
-      
+      const appName = escapeHtml(pwaSettings.appName || 'What to Watch?');
+
       // Replace title
       html = html.replace(/<title>.*?<\/title>/, `<title>${appName}</title>`);
-      
+
       // Replace apple-mobile-web-app-title
       html = html.replace(
         /(<meta\s+name="apple-mobile-web-app-title"\s+content=")([^"]*)("\s*\/>)/,
@@ -292,34 +364,22 @@ setupWebSocket(wss);
 async function performCacheRefresh(): Promise<{ success: boolean; mediaCount?: number; error?: string }> {
   try {
     const db = getDb();
-    
+
     // Get plex config
     const plexConfigRow = db.prepare('SELECT value FROM app_config WHERE key = ?').get('plex') as { value: string } | undefined;
-    
+
     if (!plexConfigRow) {
       return { success: false, error: 'No Plex config found' };
     }
-    
+
     const plexConfig = JSON.parse(plexConfigRow.value);
-    
+
     if (!plexConfig.plex_url || !plexConfig.plex_token || !plexConfig.libraries?.length) {
       return { success: false, error: 'Plex not fully configured' };
     }
-    
-    // Make internal API call to refresh cache
-    const response = await fetch(`http://localhost:${PORT}/api/plex/refresh-cache`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ libraryKeys: plexConfig.libraries }),
-    });
-    
-    if (response.ok) {
-      const result = await response.json();
-      return { success: true, mediaCount: result.mediaCount };
-    } else {
-      const errorText = await response.text();
-      return { success: false, error: errorText };
-    }
+
+    // Call cache refresh directly (bypasses HTTP auth)
+    return await performCacheRefreshDirect(plexConfig.libraries);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';
     return { success: false, error: message };

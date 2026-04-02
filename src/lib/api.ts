@@ -173,16 +173,16 @@ export const adminApi = {
   checkPasswordStatus: () =>
     fetchApi<{ isSet: boolean }>('/admin/check-password-status', { method: 'POST' }),
 
-  setPassword: (passwordHash: string) =>
-    fetchApi<{ success: boolean }>('/admin/set-password', {
+  setPassword: (password: string) =>
+    fetchApi<{ success: boolean; token?: string }>('/admin/set-password', {
       method: 'POST',
-      body: JSON.stringify({ passwordHash }),
+      body: JSON.stringify({ password }),
     }),
 
-  verifyPassword: (passwordHash: string) =>
-    fetchApi<{ valid: boolean }>('/admin/verify-password', {
+  verifyPassword: (password: string) =>
+    fetchApi<{ valid: boolean; token?: string; upgradeRequired?: boolean }>('/admin/verify-password', {
       method: 'POST',
-      body: JSON.stringify({ passwordHash }),
+      body: JSON.stringify({ password }),
     }),
 
   // Protected endpoints use fetchApiAdmin
@@ -242,6 +242,15 @@ export const adminApi = {
 
   clearSessionHistory: () =>
     fetchApiAdmin<{ success: boolean }>('/admin/clear-session-history', { method: 'POST' }),
+
+  getCorsOrigins: () =>
+    fetchApiAdminGet<{ origins: string[] }>('/admin/get-cors-origins'),
+
+  saveCorsOrigins: (origins: string[]) =>
+    fetchApiAdmin<{ success: boolean }>('/admin/save-cors-origins', {
+      method: 'POST',
+      body: JSON.stringify({ origins }),
+    }),
 };
 
 export interface CacheRefreshProgress {
@@ -290,7 +299,7 @@ export const plexApi = {
     fetchApiGet<CacheRefreshProgress>('/plex/cache-refresh-progress'),
 
   refreshCache: (libraryKeys: string[]) =>
-    fetchApi<{ success: boolean; mediaCount: number; movieCount: number; showCount: number; languageCount: number; labelsCount?: number; collectionsCount?: number }>(
+    fetchApiAdmin<{ success: boolean; mediaCount: number; movieCount: number; showCount: number; languageCount: number; labelsCount?: number; collectionsCount?: number }>(
       '/plex/refresh-cache',
       {
         method: 'POST',

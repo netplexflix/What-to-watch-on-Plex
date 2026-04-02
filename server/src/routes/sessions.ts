@@ -2,6 +2,7 @@
 import { Router } from 'express';
 import { getDb, generateId } from '../db.js';
 import { broadcastToSession } from '../websocket.js';
+import { encryptToken } from '../services/encryption.js';
 
 const router = Router();
 
@@ -38,6 +39,9 @@ router.post('/create', (req, res) => {
     const { mediaType, displayName, isGuest, plexToken, timedDuration, useWatchlist, matchTarget } = req.body;
     const { plexToken: _logToken, ...safeLogBody } = req.body;
     console.log('[Sessions] Create request body:', JSON.stringify(safeLogBody));
+
+    // Encrypt Plex token before storing
+    const encryptedPlexToken = encryptToken(plexToken);
     
     // Validate required fields
     if (!displayName || typeof displayName !== 'string' || !displayName.trim()) {
@@ -85,7 +89,7 @@ router.post('/create', (req, res) => {
       db.prepare(`
         INSERT INTO sessions (id, code, status, media_type, preferences, timed_duration, match_target, use_watchlist, host_plex_token, created_at, updated_at)
         VALUES (?, ?, 'waiting', ?, '{}', ?, ?, ?, ?, datetime('now'), datetime('now'))
-      `).run(sessionId, code, mediaType || 'both', duration, target, watchlistMode, watchlistMode ? plexToken : null);
+      `).run(sessionId, code, mediaType || 'both', duration, target, watchlistMode, watchlistMode ? encryptedPlexToken : null);
     } catch (dbError: any) {
       // If columns don't exist, try without them
       if (dbError.message && (dbError.message.includes('timed_duration') || dbError.message.includes('use_watchlist') || dbError.message.includes('match_target'))) {
@@ -94,7 +98,7 @@ router.post('/create', (req, res) => {
           db.prepare(`
             INSERT INTO sessions (id, code, status, media_type, preferences, timed_duration, use_watchlist, host_plex_token, created_at, updated_at)
             VALUES (?, ?, 'waiting', ?, '{}', ?, ?, ?, datetime('now'), datetime('now'))
-          `).run(sessionId, code, mediaType || 'both', duration, watchlistMode, watchlistMode ? plexToken : null);
+          `).run(sessionId, code, mediaType || 'both', duration, watchlistMode, watchlistMode ? encryptedPlexToken : null);
         } catch (dbError2: any) {
           if (dbError2.message && (dbError2.message.includes('timed_duration') || dbError2.message.includes('use_watchlist'))) {
             console.log('[Sessions] Some columns not found, creating session with basic columns');
@@ -115,7 +119,7 @@ router.post('/create', (req, res) => {
     db.prepare(`
       INSERT INTO session_participants (id, session_id, display_name, is_guest, plex_token, created_at)
       VALUES (?, ?, ?, ?, ?, datetime('now'))
-    `).run(participantId, sessionId, displayName.trim(), isGuest ? 1 : 0, plexToken || null);
+    `).run(participantId, sessionId, displayName.trim(), isGuest ? 1 : 0, encryptedPlexToken);
     
     // Update session with host ID
     db.prepare('UPDATE sessions SET host_user_id = ? WHERE id = ?').run(participantId, sessionId);
@@ -354,11 +358,12 @@ router.post('/:id/join', (req, res) => {
     }
     
     const participantId = generateId();
-    
+    const encryptedPlexToken = encryptToken(plexToken);
+
     db.prepare(`
       INSERT INTO session_participants (id, session_id, display_name, is_guest, plex_token, created_at)
       VALUES (?, ?, ?, ?, ?, datetime('now'))
-    `).run(participantId, id, displayName.trim(), isGuest ? 1 : 0, plexToken || null);
+    `).run(participantId, id, displayName.trim(), isGuest ? 1 : 0, encryptedPlexToken);
     
     const participant = db.prepare('SELECT * FROM session_participants WHERE id = ?').get(participantId) as any;
 

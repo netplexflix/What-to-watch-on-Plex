@@ -75,6 +75,8 @@ export const AdminSettingsTab = () => {
   const [isUploadingPwaIcon, setIsUploadingPwaIcon] = useState(false);
   const [pwaIconTimestamp, setPwaIconTimestamp] = useState(Date.now());
 
+  // CORS origins state
+
   useEffect(() => {
     loadSettings();
     loadLogo();
@@ -363,6 +365,8 @@ export const AdminSettingsTab = () => {
       toast.error("Failed to remove PWA icon");
     }
   };
+
+  // CORS origins handlers
 
   if (isLoading) {
     return (

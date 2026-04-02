@@ -1,6 +1,8 @@
 // File: server/src/routes/plex.ts
 import { Router } from 'express';
 import { getDb, generateId } from '../db.js';
+import { requireAdmin } from '../middleware/auth.js';
+import { decryptToken } from '../services/encryption.js';
 
 const router = Router();
 
@@ -132,7 +134,12 @@ function getPlexConfig() {
   const db = getDb();
   const row = db.prepare('SELECT value FROM app_config WHERE key = ?').get('plex') as { value: string } | undefined;
   if (!row) return null;
-  return JSON.parse(row.value);
+  const config = JSON.parse(row.value);
+  // Decrypt the Plex token (handles both encrypted and plaintext values)
+  if (config.plex_token) {
+    config.plex_token = decryptToken(config.plex_token);
+  }
+  return config;
 }
 
 function getSessionSettings() {
@@ -553,7 +560,7 @@ async function getShowLanguagesFromEpisode(
 }
 
 // Refresh cache with progress tracking
-router.post('/refresh-cache', async (req, res) => {
+router.post('/refresh-cache', requireAdmin, async (req, res) => {
   if (cacheRefreshProgress.isRunning) {
     return res.status(409).json({ error: 'Cache refresh already in progress' });
   }
@@ -1033,12 +1040,13 @@ router.get('/session/:sessionId/watched-keys/:participantId', async (req, res) =
       'SELECT plex_token FROM session_participants WHERE id = ? AND session_id = ?'
     ).get(participantId, sessionId) as { plex_token: string | null } | undefined;
 
-    if (!participant?.plex_token) {
+    const token = decryptToken(participant?.plex_token);
+    if (!token) {
       return res.json({ watchedKeys: [] });
     }
 
     const selectedLibraries = config.libraries || [];
-    const watchedKeys = await getWatchedItems(config.plex_url, participant.plex_token, selectedLibraries);
+    const watchedKeys = await getWatchedItems(config.plex_url, token, selectedLibraries);
 
     res.json({ watchedKeys: Array.from(watchedKeys) });
   } catch (error) {
@@ -1062,13 +1070,14 @@ router.get('/session/:sessionId/watchlist-keys', async (req, res) => {
       'SELECT host_plex_token, use_watchlist FROM sessions WHERE id = ?'
     ).get(sessionId) as { host_plex_token: string | null; use_watchlist: number } | undefined;
 
-    if (!session?.use_watchlist || !session?.host_plex_token) {
+    const hostToken = decryptToken(session?.host_plex_token);
+    if (!session?.use_watchlist || !hostToken) {
       return res.json({ watchlistKeys: [], watchlistCount: 0, matchedCount: 0 });
     }
 
     console.log('[Plex] Fetching watchlist for session host (server-side)...');
 
-    const watchlistItems = await fetchAllWatchlistItems(session.host_plex_token);
+    const watchlistItems = await fetchAllWatchlistItems(hostToken);
     console.log(`[Plex] Found ${watchlistItems.length} total items in host's watchlist`);
 
     const watchlistGuids = new Set<string>();
@@ -1678,7 +1687,8 @@ router.post('/session/:sessionId/check-watchlist/:participantId', async (req, re
       'SELECT plex_token FROM session_participants WHERE id = ? AND session_id = ?'
     ).get(participantId, sessionId) as { plex_token: string | null } | undefined;
 
-    if (!participant?.plex_token) {
+    const participantToken = decryptToken(participant?.plex_token);
+    if (!participantToken) {
       return res.json({ inWatchlist: false });
     }
 
@@ -1687,7 +1697,7 @@ router.post('/session/:sessionId/check-watchlist/:participantId', async (req, re
       return res.json({ inWatchlist: false });
     }
 
-    const watchlistItems = await fetchAllWatchlistItems(participant.plex_token);
+    const watchlistItems = await fetchAllWatchlistItems(participantToken);
 
     let inWatchlist = watchlistItems.some((wItem: any) =>
       wItem.title?.toLowerCase() === itemInfo.title?.toLowerCase() &&
@@ -1737,7 +1747,8 @@ router.post('/session/:sessionId/add-to-watchlist/:participantId', async (req, r
       'SELECT plex_token FROM session_participants WHERE id = ? AND session_id = ?'
     ).get(participantId, sessionId) as { plex_token: string | null } | undefined;
 
-    if (!participant?.plex_token) {
+    const participantToken = decryptToken(participant?.plex_token);
+    if (!participantToken) {
       return res.status(403).json({ error: 'Not a Plex user' });
     }
 
@@ -1747,7 +1758,7 @@ router.post('/session/:sessionId/add-to-watchlist/:participantId', async (req, r
     }
 
     const watchlistRatingKey = await findWatchlistRatingKey(
-      participant.plex_token,
+      participantToken,
       itemInfo.title,
       itemInfo.year,
       itemInfo.type,
@@ -1768,7 +1779,7 @@ router.post('/session/:sessionId/add-to-watchlist/:participantId', async (req, r
         method: 'PUT',
         headers: {
           'Accept': 'application/json',
-          'X-Plex-Token': participant.plex_token,
+          'X-Plex-Token': participantToken,
           'X-Plex-Client-Identifier': 'what-to-watch',
         },
       }
@@ -1890,9 +1901,17 @@ router.post('/oauth/check-pin', async (req, res) => {
 // Proxy Plex images
 router.get('/image', async (req, res) => {
   try {
-    const imagePath = req.query.path as string;
-    if (!imagePath) {
+    const rawPath = req.query.path as string;
+    if (!rawPath) {
       return res.status(400).json({ error: 'Missing path parameter' });
+    }
+
+    // Decode percent-encoding BEFORE validation to prevent bypass via %2e%2e etc.
+    let imagePath: string;
+    try {
+      imagePath = decodeURIComponent(rawPath);
+    } catch {
+      return res.status(400).json({ error: 'Invalid image path encoding' });
     }
 
     const ALLOWED_PATH_PREFIXES = ['/library/', '/photo/', '/:/image'];
@@ -1900,7 +1919,7 @@ router.get('/image', async (req, res) => {
       imagePath.startsWith('/') &&
       !imagePath.includes('..') &&
       !imagePath.toLowerCase().includes('http') &&
-      /^[a-zA-Z0-9/\-_.%+@:,=&?]+$/.test(imagePath) &&
+      /^[a-zA-Z0-9/\-_.+@:,=&?]+$/.test(imagePath) &&
       ALLOWED_PATH_PREFIXES.some(prefix => imagePath.startsWith(prefix));
 
     if (!isSafePath) {
@@ -2500,5 +2519,156 @@ router.get('/server-info', async (req, res) => {
     res.status(500).json({ error: 'Failed to get server info' });
   }
 });
+
+// Direct cache refresh for internal use (auto-refresh scheduler) - bypasses HTTP auth
+export async function performCacheRefreshDirect(libraryKeys: string[]): Promise<{ success: boolean; mediaCount?: number; error?: string }> {
+  if (cacheRefreshProgress.isRunning) {
+    return { success: false, error: 'Cache refresh already in progress' };
+  }
+
+  try {
+    const config = getPlexConfig();
+    if (!config?.plex_url || !config?.plex_token) {
+      return { success: false, error: 'Plex not configured' };
+    }
+
+    const selectedLibraries = libraryKeys || config.libraries || [];
+    const sortedLibraryKeys = [...selectedLibraries].sort().join(',');
+
+    cacheRefreshProgress.isRunning = true;
+    cacheRefreshProgress.phase = 'starting';
+    cacheRefreshProgress.moviesProcessed = 0;
+    cacheRefreshProgress.moviesTotal = 0;
+    cacheRefreshProgress.showsProcessed = 0;
+    cacheRefreshProgress.showsTotal = 0;
+    cacheRefreshProgress.languagesFound = 0;
+    cacheRefreshProgress.collectionsProcessed = 0;
+    cacheRefreshProgress.labelsFound = 0;
+    cacheRefreshProgress.error = undefined;
+
+    const db = getDb();
+
+    db.prepare('DELETE FROM media_items_cache WHERE library_keys = ?').run(sortedLibraryKeys);
+    db.prepare('DELETE FROM library_languages_cache WHERE library_keys = ?').run(sortedLibraryKeys);
+    db.prepare('DELETE FROM media_labels_cache WHERE library_keys = ?').run(sortedLibraryKeys);
+    db.prepare('DELETE FROM collections_cache').run();
+    db.prepare('DELETE FROM collection_items_cache').run();
+
+    console.log('[Cache] Starting internal cache refresh for libraries:', selectedLibraries);
+
+    const { items: movieItems, languages: movieLanguages, labels: movieLabels } = await fetchMediaItemsWithLanguagesAndProgress(
+      config.plex_url, config.plex_token, selectedLibraries, 'movies'
+    );
+    const { items: showItems, languages: showLanguages, labels: showLabels } = await fetchMediaItemsWithLanguagesAndProgress(
+      config.plex_url, config.plex_token, selectedLibraries, 'shows'
+    );
+
+    cacheRefreshProgress.phase = 'languages';
+
+    const insertMedia = db.prepare(`
+      INSERT INTO media_items_cache (id, library_keys, media_type, items, item_count, updated_at)
+      VALUES (?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(library_keys, media_type) DO UPDATE SET
+        items = excluded.items,
+        item_count = excluded.item_count,
+        updated_at = datetime('now')
+    `);
+
+    if (movieItems.length > 0) {
+      insertMedia.run(generateId(), sortedLibraryKeys, 'movies', JSON.stringify(movieItems), movieItems.length);
+    }
+    if (showItems.length > 0) {
+      insertMedia.run(generateId(), sortedLibraryKeys, 'shows', JSON.stringify(showItems), showItems.length);
+    }
+
+    const bothItems = [...movieItems, ...showItems];
+    if (bothItems.length > 0) {
+      insertMedia.run(generateId(), sortedLibraryKeys, 'both', JSON.stringify(bothItems), bothItems.length);
+    }
+
+    const mergedLanguages = new Map<string, number>();
+    for (const [lang, count] of movieLanguages) {
+      mergedLanguages.set(lang, (mergedLanguages.get(lang) || 0) + count);
+    }
+    for (const [lang, count] of showLanguages) {
+      mergedLanguages.set(lang, (mergedLanguages.get(lang) || 0) + count);
+    }
+
+    const languages = Array.from(mergedLanguages.entries())
+      .map(([language, count]) => ({ language, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 20);
+
+    cacheRefreshProgress.languagesFound = languages.length;
+
+    if (languages.length > 0) {
+      db.prepare(`
+        INSERT INTO library_languages_cache (id, library_keys, languages, updated_at)
+        VALUES (?, ?, ?, datetime('now'))
+        ON CONFLICT(library_keys) DO UPDATE SET
+          languages = excluded.languages,
+          updated_at = datetime('now')
+      `).run(generateId(), sortedLibraryKeys, JSON.stringify(languages));
+    }
+
+    const mergedLabels = new Map<string, number>();
+    for (const [label, count] of movieLabels) {
+      mergedLabels.set(label, (mergedLabels.get(label) || 0) + count);
+    }
+    for (const [label, count] of showLabels) {
+      mergedLabels.set(label, (mergedLabels.get(label) || 0) + count);
+    }
+
+    const labels = Array.from(mergedLabels.entries())
+      .map(([label, count]) => ({ label, count }))
+      .sort((a, b) => b.count - a.count);
+
+    cacheRefreshProgress.labelsFound = labels.length;
+
+    if (labels.length > 0) {
+      db.prepare(`
+        INSERT INTO media_labels_cache (id, library_keys, labels, updated_at)
+        VALUES (?, ?, ?, datetime('now'))
+        ON CONFLICT(library_keys) DO UPDATE SET
+          labels = excluded.labels,
+          updated_at = datetime('now')
+      `).run(generateId(), sortedLibraryKeys, JSON.stringify(labels));
+    }
+
+    cacheRefreshProgress.phase = 'collections';
+    const collectionsCount = await preCacheCollections(config.plex_url, config.plex_token, selectedLibraries);
+    cacheRefreshProgress.collectionsProcessed = collectionsCount;
+
+    cacheRefreshProgress.phase = 'complete';
+
+    const mediaCount = movieItems.length + showItems.length;
+
+    db.prepare(`
+      INSERT INTO app_config (key, value, updated_at)
+      VALUES ('last_cache_refresh', ?, datetime('now'))
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+    `).run(JSON.stringify({
+      timestamp: new Date().toISOString(),
+      mediaCount,
+      movieCount: movieItems.length,
+      showCount: showItems.length,
+      languageCount: languages.length,
+      labelsCount: labels.length,
+      type: 'auto',
+      success: true
+    }));
+
+    return { success: true, mediaCount };
+  } catch (error) {
+    console.error('Error in direct cache refresh:', error);
+    cacheRefreshProgress.error = error instanceof Error ? error.message : 'Unknown error';
+    cacheRefreshProgress.phase = 'error';
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  } finally {
+    setTimeout(() => {
+      cacheRefreshProgress.isRunning = false;
+    }, 2000);
+  }
+}
 
 export { router as plexRoutes };

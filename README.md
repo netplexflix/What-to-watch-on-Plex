@@ -77,6 +77,10 @@ Click install and apply the default template.
 3. Enter your Plex `http://IP:PORT` and [Plex Token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/)
 4. Select your libraries ==> click on `Save Settings` ==> click on `Refresh Cache` and wait for the cache to be completed.
 
+### Allowed Domains
+If you access this app through a custom domain or reverse proxy (e.g. wtw.mydomain.com), add it here.
+Only requests from allowed domains will be accepted.
+
 ### Optional Settings
 
 - **Auto Refresh:** Automatically refresh your cache at 3AM.

@@ -6,44 +6,20 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import sharp from 'sharp';
+import {
+  requireAdmin,
+  createRateLimiter,
+  hashPasswordServer,
+  verifyPasswordServer,
+  verifyLegacyPassword,
+  createAdminSession,
+} from '../middleware/auth.js';
+import { encryptToken, decryptToken } from '../services/encryption.js';
+import { loadCorsOrigins } from '../index.js';
 
 const router = Router();
 
-interface RateLimitEntry {
-  count: number;
-  resetAt: number;
-}
-
-const rateLimitStore = new Map<string, RateLimitEntry>();
-const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
-const RATE_LIMIT_MAX = 20; // max attempts per window
-
-function authRateLimiter(req: Request, res: Response, next: NextFunction) {
-  const ip = req.ip || req.socket.remoteAddress || 'unknown';
-  const now = Date.now();
-  const entry = rateLimitStore.get(ip);
-
-  if (entry && now < entry.resetAt) {
-    if (entry.count >= RATE_LIMIT_MAX) {
-      const retryAfterSec = Math.ceil((entry.resetAt - now) / 1000);
-      res.set('Retry-After', String(retryAfterSec));
-      return res.status(429).json({ error: 'Too many attempts. Please try again later.' });
-    }
-    entry.count++;
-  } else {
-    rateLimitStore.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
-  }
-
-  next();
-}
-
-// Periodically clean up expired entries to avoid memory growth
-setInterval(() => {
-  const now = Date.now();
-  for (const [ip, entry] of rateLimitStore.entries()) {
-    if (now >= entry.resetAt) rateLimitStore.delete(ip);
-  }
-}, RATE_LIMIT_WINDOW_MS);
+const authRateLimiter = createRateLimiter(15 * 60 * 1000, 20); // 15 min window, 20 max
 
 // Configure multer for logo uploads
 const DATA_PATH = process.env.DATA_PATH || './data';
@@ -99,11 +75,11 @@ const upload = multer({
     fileSize: 5 * 1024 * 1024,
   },
   fileFilter: (req, file, cb) => {
-    const allowedTypes = ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/svg+xml'];
+    const allowedTypes = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
     if (allowedTypes.includes(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(new Error('Invalid file type. Only PNG, JPEG, GIF, WebP, and SVG are allowed.'));
+      cb(new Error('Invalid file type. Only PNG, JPEG, GIF, and WebP are allowed.'));
     }
   },
 });
@@ -133,40 +109,7 @@ const pwaIconUpload = multer({
   },
 });
 
-// Hash password using SHA-256
-function hashPassword(password: string): string {
-  return crypto.createHash('sha256').update(password).digest('hex');
-}
-
-// ============ AUTH MIDDLEWARE ============
-
-// Verify admin auth via X-Admin-Token header
-function requireAdmin(req: Request, res: Response, next: NextFunction) {
-  const token = req.headers['x-admin-token'] as string;
-  
-  if (!token) {
-    return res.status(401).json({ error: 'Authentication required' });
-  }
-  
-  try {
-    const db = getDb();
-    const row = db.prepare('SELECT value FROM app_config WHERE key = ?').get('admin_password') as { value: string } | undefined;
-    
-    if (!row) {
-      return res.status(401).json({ error: 'Admin password not set' });
-    }
-    
-    const config = JSON.parse(row.value);
-    if (config.hash !== token) {
-      return res.status(403).json({ error: 'Invalid credentials' });
-    }
-    
-    next();
-  } catch (error) {
-    console.error('[Admin] Auth middleware error:', error);
-    return res.status(500).json({ error: 'Authentication error' });
-  }
-}
+// ============ AUTH (uses shared middleware from middleware/auth.ts) ============
 
 // ============ PUBLIC ROUTES (no auth required) ============
 
@@ -188,17 +131,17 @@ router.post('/check-password-status', (req, res) => {
   }
 });
 
-// Set admin password
+// Set admin password (accepts plaintext, hashes server-side with scrypt)
 router.post('/set-password', authRateLimiter, (req, res) => {
   try {
-    const { passwordHash } = req.body;
-    if (!passwordHash) {
-      return res.status(400).json({ error: 'Password hash required' });
+    const { password } = req.body;
+    if (!password || typeof password !== 'string' || password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
     }
 
     const db = getDb();
     const existing = db.prepare('SELECT value FROM app_config WHERE key = ?').get('admin_password') as { value: string } | undefined;
-    
+
     if (existing) {
       const config = JSON.parse(existing.value);
       if (config.hash) {
@@ -206,37 +149,69 @@ router.post('/set-password', authRateLimiter, (req, res) => {
       }
     }
 
+    const hash = hashPasswordServer(password);
     const stmt = db.prepare(`
-      INSERT INTO app_config (key, value, updated_at) 
+      INSERT INTO app_config (key, value, updated_at)
       VALUES (?, ?, datetime('now'))
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
     `);
-    stmt.run('admin_password', JSON.stringify({ hash: passwordHash }));
+    stmt.run('admin_password', JSON.stringify({ hash, version: 2 }));
 
-    res.json({ success: true });
+    const token = createAdminSession();
+    res.json({ success: true, token });
   } catch (error) {
     console.error('[Admin] Error setting password:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// Verify admin password
+// Verify admin password (accepts plaintext, verifies server-side)
+// Supports migration from legacy SHA-256 (version 1) to scrypt (version 2)
 router.post('/verify-password', authRateLimiter, (req, res) => {
   try {
-    const { passwordHash } = req.body;
-    if (!passwordHash) {
+    const { password, passwordHash: legacyHash } = req.body;
+    if (!password && !legacyHash) {
       return res.json({ valid: false });
     }
 
     const db = getDb();
     const row = db.prepare('SELECT value FROM app_config WHERE key = ?').get('admin_password') as { value: string } | undefined;
-    
+
     if (!row) {
       return res.json({ valid: false });
     }
 
     const config = JSON.parse(row.value);
-    res.json({ valid: config.hash === passwordHash });
+
+    // Version 2: scrypt hash (new format)
+    if (config.version === 2) {
+      if (!password) {
+        // Old client sending only passwordHash — tell it to upgrade
+        return res.json({ valid: false, upgradeRequired: true });
+      }
+      if (verifyPasswordServer(password, config.hash)) {
+        const token = createAdminSession();
+        return res.json({ valid: true, token });
+      }
+      return res.json({ valid: false });
+    }
+
+    // Version 1 / legacy: SHA-256 hash-as-token (migration path)
+    const clientHash = legacyHash || (password ? crypto.createHash('sha256').update(password).digest('hex') : null);
+    if (clientHash && verifyLegacyPassword(clientHash, config.hash)) {
+      // Migrate to scrypt if we have the plaintext password
+      if (password) {
+        const newHash = hashPasswordServer(password);
+        db.prepare(`
+          UPDATE app_config SET value = ?, updated_at = datetime('now') WHERE key = 'admin_password'
+        `).run(JSON.stringify({ hash: newHash, version: 2 }));
+        console.log('[Admin] Migrated password from SHA-256 to scrypt');
+      }
+      const token = createAdminSession();
+      return res.json({ valid: true, token });
+    }
+
+    return res.json({ valid: false });
   } catch (error) {
     console.error('[Admin] Error verifying password:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -271,7 +246,6 @@ router.get('/logo/:filename', (req, res) => {
       '.jpeg': 'image/jpeg',
       '.gif': 'image/gif',
       '.webp': 'image/webp',
-      '.svg': 'image/svg+xml',
     };
     
     const contentType = contentTypes[ext] || 'application/octet-stream';
@@ -385,20 +359,28 @@ router.post('/get-session-settings', (req, res) => {
 
 // ============ PROTECTED ROUTES (require admin auth) ============
 
-// Get Plex config
+// Get Plex config (decrypt token before sending to client)
 router.post('/get-config', requireAdmin, (req, res) => {
   try {
     const db = getDb();
     const row = db.prepare('SELECT value FROM app_config WHERE key = ?').get('plex') as { value: string } | undefined;
-    
-    res.json({ config: row ? JSON.parse(row.value) : null });
+
+    if (row) {
+      const config = JSON.parse(row.value);
+      if (config.plex_token) {
+        config.plex_token = decryptToken(config.plex_token);
+      }
+      res.json({ config });
+    } else {
+      res.json({ config: null });
+    }
   } catch (error) {
     console.error('[Admin] Error getting config:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// Save Plex config
+// Save Plex config (encrypt token before storing)
 router.post('/save-config', requireAdmin, (req, res) => {
   try {
     const { config } = req.body;
@@ -406,13 +388,19 @@ router.post('/save-config', requireAdmin, (req, res) => {
       return res.status(400).json({ error: 'Config required' });
     }
 
+    // Encrypt the Plex token before storing
+    const configToStore = { ...config };
+    if (configToStore.plex_token) {
+      configToStore.plex_token = encryptToken(configToStore.plex_token);
+    }
+
     const db = getDb();
     const stmt = db.prepare(`
-      INSERT INTO app_config (key, value, updated_at) 
+      INSERT INTO app_config (key, value, updated_at)
       VALUES (?, ?, datetime('now'))
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
     `);
-    stmt.run('plex', JSON.stringify(config));
+    stmt.run('plex', JSON.stringify(configToStore));
 
     res.json({ success: true });
   } catch (error) {
@@ -676,6 +664,59 @@ router.post('/clear-session-history', requireAdmin, (req, res) => {
   } catch (error) {
     console.error('[Admin] Error clearing session history:', error);
     res.status(500).json({ error: 'Failed to clear session history' });
+  }
+});
+
+// Get CORS allowed origins
+router.get('/get-cors-origins', requireAdmin, (req, res) => {
+  try {
+    const db = getDb();
+    const row = db.prepare("SELECT value FROM app_config WHERE key = 'cors_origins'").get() as any;
+    const origins: string[] = row ? JSON.parse(row.value) : [];
+    res.json({ origins });
+  } catch (error) {
+    console.error('[Admin] Error getting CORS origins:', error);
+    res.status(500).json({ error: 'Failed to get CORS origins' });
+  }
+});
+
+// Save CORS allowed origins
+router.post('/save-cors-origins', requireAdmin, (req, res) => {
+  try {
+    const { origins } = req.body;
+    if (!Array.isArray(origins)) {
+      return res.status(400).json({ error: 'Origins must be an array' });
+    }
+
+    // Validate and normalize each origin
+    const normalized: string[] = [];
+    for (const origin of origins) {
+      if (typeof origin !== 'string') continue;
+      const trimmed = origin.trim().replace(/\/+$/, ''); // strip trailing slashes
+      if (!trimmed) continue;
+      try {
+        const url = new URL(trimmed);
+        normalized.push(url.origin);
+      } catch {
+        return res.status(400).json({ error: `Invalid origin: ${trimmed}` });
+      }
+    }
+
+    const db = getDb();
+    const stmt = db.prepare(`
+      INSERT INTO app_config (key, value, updated_at)
+      VALUES (?, ?, datetime('now'))
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+    `);
+    stmt.run('cors_origins', JSON.stringify(normalized));
+
+    // Refresh the in-memory cache
+    loadCorsOrigins();
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[Admin] Error saving CORS origins:', error);
+    res.status(500).json({ error: 'Failed to save CORS origins' });
   }
 });
 

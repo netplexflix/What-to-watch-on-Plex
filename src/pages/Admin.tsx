@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { ArrowLeft, Save, Server, CheckCircle, XCircle, Loader2, Library, KeyRound, RefreshCw, Database, Settings, Clock, AlertCircle, History } from "lucide-react";
+import { ArrowLeft, Save, Server, CheckCircle, XCircle, Loader2, Library, KeyRound, RefreshCw, Database, Settings, Clock, AlertCircle, History, Globe, Plus, X } from "lucide-react";
 import { useHaptics } from "@/hooks/useHaptics";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,7 +15,6 @@ import { AdminSettingsTab } from "@/components/admin/AdminSettingsTab";
 import { SessionHistoryTab } from "@/components/admin/SessionHistoryTab";
 import { CacheProgressIndicator } from "@/components/admin/CacheProgressIndicator";
 import { VersionInfo } from "@/components/admin/VersionInfo";
-import { hashPassword } from "@/lib/crypto";
 
 interface PlexLibrary {
   key: string;
@@ -78,6 +77,9 @@ const Admin = () => {
   
   const [activeTab, setActiveTab] = useState<"connection" | "settings" | "history">("connection");
   const [cacheProgress, setCacheProgress] = useState<CacheRefreshProgress | null>(null);
+  const [corsOrigins, setCorsOrigins] = useState<string[]>([]);
+  const [newOrigin, setNewOrigin] = useState("");
+  const [isSavingCors, setIsSavingCors] = useState(false);
   
   const progressPollRef = useRef<number | null>(null);
 
@@ -97,6 +99,7 @@ const Admin = () => {
       loadCacheStats();
       loadLastCacheRefresh();
       loadSessionSettings();
+      loadCorsOrigins();
     }
   }, [isAuthenticated]);
 
@@ -179,13 +182,14 @@ const Admin = () => {
     }
 
     try {
-      const hashedPassword = await hashPassword(password);
-      const { error } = await adminApi.setPassword(hashedPassword);
+      const { data, error } = await adminApi.setPassword(password);
 
       if (error) throw new Error(error);
 
-      // Store the token for authenticated requests
-      setAdminToken(hashedPassword);
+      // Store the session token for authenticated requests
+      if (data?.token) {
+        setAdminToken(data.token);
+      }
 
       toast.success("Admin password set successfully!");
       setIsPasswordSet(true);
@@ -200,15 +204,14 @@ const Admin = () => {
 
   const handleLogin = async () => {
     try {
-      const hashedPassword = await hashPassword(password);
-      const { data, error } = await adminApi.verifyPassword(hashedPassword);
+      const { data, error } = await adminApi.verifyPassword(password);
 
       if (error) throw new Error(error);
 
-      if (data?.valid) {
-        // Store the token for authenticated requests
-        setAdminToken(hashedPassword);
-        
+      if (data?.valid && data?.token) {
+        // Store the session token for authenticated requests
+        setAdminToken(data.token);
+
         setIsAuthenticated(true);
         setPassword("");
       } else {
@@ -319,6 +322,70 @@ const Admin = () => {
       console.error("Error saving auto cache refresh setting:", err);
       toast.error("Failed to save setting");
       setAutoCacheRefresh(!enabled);
+    }
+  };
+
+  const loadCorsOrigins = async () => {
+    try {
+      const { data, error } = await adminApi.getCorsOrigins();
+      if (error) {
+        console.error("Error loading CORS origins:", error);
+        return;
+      }
+      if (data?.origins) {
+        setCorsOrigins(data.origins);
+      }
+    } catch (err) {
+      console.error("Exception loading CORS origins:", err);
+    }
+  };
+
+  const handleAddOrigin = () => {
+    let trimmed = newOrigin.trim().replace(/\/+$/, "");
+    if (!trimmed) return;
+
+    if (!/^https?:\/\//i.test(trimmed)) {
+      trimmed = `https://${trimmed}`;
+    }
+
+    try {
+      const url = new URL(trimmed);
+      const origin = url.origin;
+
+      if (corsOrigins.includes(origin)) {
+        toast.error("This domain is already in the list");
+        return;
+      }
+
+      haptics.selection();
+      setCorsOrigins(prev => [...prev, origin]);
+      setNewOrigin("");
+    } catch {
+      toast.error("Please enter a valid domain (e.g. https://wtw.mydomain.com)");
+    }
+  };
+
+  const handleRemoveOrigin = (origin: string) => {
+    haptics.selection();
+    setCorsOrigins(prev => prev.filter(o => o !== origin));
+  };
+
+  const handleSaveCorsOrigins = async () => {
+    setIsSavingCors(true);
+    haptics.medium();
+
+    try {
+      const { error } = await adminApi.saveCorsOrigins(corsOrigins);
+      if (error) throw new Error(error);
+
+      haptics.success();
+      toast.success("Allowed domains saved!");
+    } catch (err) {
+      haptics.error();
+      console.error("Error saving CORS origins:", err);
+      toast.error("Failed to save allowed domains");
+    } finally {
+      setIsSavingCors(false);
     }
   };
 
@@ -733,6 +800,91 @@ const Admin = () => {
                 </div>
               </motion.div>
             )}
+
+            {/* Allowed Domains (CORS) */}
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.3 }}
+              className="glass-card rounded-xl p-4 space-y-4"
+            >
+              <div>
+                <div className="flex items-center gap-2">
+                  <Globe size={20} className="text-primary" />
+                  <h2 className="font-semibold text-foreground">Allowed Domains</h2>
+                </div>
+                <p className="text-sm text-muted-foreground mt-1">
+                  If you access this app through a custom domain or reverse proxy (e.g. wtw.mydomain.com), add it here so the app works correctly. You don't need to add anything if you only use localhost.
+                </p>
+              </div>
+
+              <div className="flex gap-2">
+                <Input
+                  value={newOrigin}
+                  onChange={(e) => setNewOrigin(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      handleAddOrigin();
+                    }
+                  }}
+                  placeholder="https://wtw.mydomain.com"
+                  className="flex-1 bg-secondary border-secondary"
+                />
+                <Button
+                  onClick={handleAddOrigin}
+                  disabled={!newOrigin.trim()}
+                  size="icon"
+                  variant="outline"
+                >
+                  <Plus size={18} />
+                </Button>
+              </div>
+
+              {corsOrigins.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {corsOrigins.map((origin) => (
+                    <div
+                      key={origin}
+                      className="flex items-center gap-1 px-3 py-1 bg-secondary rounded-full text-sm"
+                    >
+                      <span className="text-foreground">{origin}</span>
+                      <button
+                        onClick={() => handleRemoveOrigin(origin)}
+                        className="text-muted-foreground hover:text-destructive transition-colors"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {corsOrigins.length === 0 && (
+                <p className="text-sm text-muted-foreground italic">
+                  No custom domains added — localhost access works by default
+                </p>
+              )}
+
+              <Button
+                onClick={handleSaveCorsOrigins}
+                disabled={isSavingCors}
+                variant="outline"
+                className="w-full"
+              >
+                {isSavingCors ? (
+                  <>
+                    <Loader2 className="mr-2 animate-spin" size={18} />
+                    Saving...
+                  </>
+                ) : (
+                  <>
+                    <Save className="mr-2" size={18} />
+                    Save Allowed Domains
+                  </>
+                )}
+              </Button>
+            </motion.div>
 
             <Button
               onClick={handleSave}
