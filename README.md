@@ -103,6 +103,7 @@ Only requests from allowed domains will be accepted.
 - **Lobby QR Code:** Display a QR code in the lobby for easy session joining.
 - **Rating Display:** Choose whether detail cards show `Critic Rating`, `Audience Rating`or `both`.
 - **Label Restrictions:** Include or Exclude items based on Plex labels.
+- **Require Plex Server Access:** When enabled, the app is hidden behind a Plex login wall. Only users whose Plex account has access to your configured Plex server (you and anyone you've shared the server with) can create or join sessions. Guest sessions are disabled while this is on. The admin panel remains accessible. Existing sessions are not affected when the setting is toggled.
 - **PWA Customization:** Customize the PWA name and icon.
 
 ---

@@ -284,6 +284,15 @@ export const plexApi = {
       body: JSON.stringify({ plexUrl, plexToken }),
     }),
 
+  verifyAccess: (plexToken: string) =>
+    fetchApi<{ hasAccess: boolean; user?: { username?: string; email?: string; thumb?: string } }>(
+      '/plex/verify-access',
+      {
+        method: 'POST',
+        body: JSON.stringify({ plexToken }),
+      }
+    ),
+
   getLibraries: (plexUrl?: string, plexToken?: string) =>
     fetchApi<{ libraries: any[] }>('/plex/get-libraries', {
       method: 'POST',

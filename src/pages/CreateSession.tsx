@@ -14,14 +14,28 @@ import type { PlexUser } from "@/lib/userStore";
 import { toast } from "sonner";
 import { useHaptics } from "@/hooks/useHaptics";
 import { usePlexOAuth } from "@/hooks/usePlexOAuth";
+import { useAccessGate } from "@/hooks/useAccessGate";
 import { cn } from "@/lib/utils";
 
 const CreateSession = () => {
   const navigate = useNavigate();
   const haptics = useHaptics();
+  const { gated, verifying: gateVerifying, hasAccess } = useAccessGate();
   const [displayName, setDisplayName] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [joinAsGuest, setJoinAsGuest] = useState(true);
+
+  // If access is gated and this user isn't verified, bounce back to the wall on `/`.
+  useEffect(() => {
+    if (!gateVerifying && gated && !hasAccess) {
+      navigate("/", { replace: true });
+    }
+  }, [gateVerifying, gated, hasAccess, navigate]);
+
+  // When the gate is on, Plex sign-in is mandatory — never default to guest.
+  useEffect(() => {
+    if (gated) setJoinAsGuest(false);
+  }, [gated]);
   const [mediaType, setMediaType] = useState<"movies" | "shows" | "both">(
     "movies"
   );
@@ -343,6 +357,19 @@ const CreateSession = () => {
               </div>
             </div>
 
+            {gated ? (
+              <div className="glass-card border-2 border-primary/30 rounded-xl p-4 flex items-center gap-3">
+                <LogIn className="text-primary shrink-0" size={20} />
+                <div className="text-left">
+                  <p className="font-medium text-foreground text-sm">
+                    {plexUser ? `Signed in as ${plexUser.username}` : "Plex sign-in required"}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Guest sessions disabled by host.
+                  </p>
+                </div>
+              </div>
+            ) : (
             <div className="space-y-3">
               <label className="text-sm font-medium text-foreground">
                 How do you want to join?
@@ -416,6 +443,7 @@ const CreateSession = () => {
                 </button>
               </div>
             </div>
+            )}
 
             {isPlexAuthenticated && (
               <motion.div

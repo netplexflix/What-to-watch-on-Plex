@@ -1,5 +1,6 @@
 // File: server/src/routes/plex.ts
 import { Router } from 'express';
+import crypto from 'crypto';
 import { getDb, generateId } from '../db.js';
 import { requireAdmin } from '../middleware/auth.js';
 import { decryptToken } from '../services/encryption.js';
@@ -148,6 +149,139 @@ function getSessionSettings() {
   if (!row) return {};
   return JSON.parse(row.value);
 }
+
+// ============ PLEX SERVER MEMBERSHIP VERIFICATION ============
+
+type PlexUserInfo = { username?: string; email?: string; thumb?: string };
+type MembershipResult = { hasAccess: boolean; user?: PlexUserInfo };
+
+// Cache verification results for 10 minutes to avoid hammering plex.tv
+const membershipCache = new Map<string, { result: MembershipResult; expiresAt: number }>();
+const MEMBERSHIP_TTL_MS = 10 * 60 * 1000;
+
+// Cache the configured server's machineIdentifier for 1 hour
+let serverIdCache: { id: string; expiresAt: number } | null = null;
+const SERVER_ID_TTL_MS = 60 * 60 * 1000;
+
+function hashToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+async function getConfiguredServerMachineId(): Promise<string | null> {
+  const now = Date.now();
+  if (serverIdCache && serverIdCache.expiresAt > now) {
+    return serverIdCache.id;
+  }
+  const config = getPlexConfig();
+  if (!config?.plex_url || !config?.plex_token) return null;
+  try {
+    const response = await fetch(
+      `${config.plex_url}/identity?X-Plex-Token=${config.plex_token}`,
+      { headers: { Accept: 'application/json' } }
+    );
+    if (!response.ok) return null;
+    const data = await response.json();
+    const id = data.MediaContainer?.machineIdentifier;
+    if (!id) return null;
+    serverIdCache = { id, expiresAt: now + SERVER_ID_TTL_MS };
+    return id;
+  } catch (err) {
+    console.error('[Plex] Failed to fetch server identity:', err);
+    return null;
+  }
+}
+
+export function invalidateServerIdCache() {
+  serverIdCache = null;
+}
+
+export async function verifyPlexServerMembership(userPlexToken: string): Promise<MembershipResult> {
+  if (!userPlexToken) return { hasAccess: false };
+
+  const cacheKey = hashToken(userPlexToken);
+  const cached = membershipCache.get(cacheKey);
+  const now = Date.now();
+  if (cached && cached.expiresAt > now) {
+    return cached.result;
+  }
+
+  const serverMachineId = await getConfiguredServerMachineId();
+  if (!serverMachineId) {
+    // Plex not configured — can't verify; deny.
+    const result: MembershipResult = { hasAccess: false };
+    membershipCache.set(cacheKey, { result, expiresAt: now + 30 * 1000 });
+    return result;
+  }
+
+  try {
+    const [resourcesResp, userResp] = await Promise.all([
+      fetch('https://plex.tv/api/v2/resources?includeHttps=1', {
+        headers: {
+          Accept: 'application/json',
+          'X-Plex-Token': userPlexToken,
+          'X-Plex-Product': PLEX_APP_NAME,
+          'X-Plex-Client-Identifier': PLEX_CLIENT_ID,
+        },
+      }),
+      fetch('https://plex.tv/api/v2/user', {
+        headers: {
+          Accept: 'application/json',
+          'X-Plex-Token': userPlexToken,
+          'X-Plex-Product': PLEX_APP_NAME,
+          'X-Plex-Client-Identifier': PLEX_CLIENT_ID,
+        },
+      }),
+    ]);
+
+    if (!resourcesResp.ok) {
+      const result: MembershipResult = { hasAccess: false };
+      membershipCache.set(cacheKey, { result, expiresAt: now + 30 * 1000 });
+      return result;
+    }
+
+    const resources = (await resourcesResp.json()) as Array<any>;
+    const match = resources.find(
+      (r) =>
+        r?.clientIdentifier === serverMachineId &&
+        typeof r?.provides === 'string' &&
+        r.provides.split(',').map((p: string) => p.trim()).includes('server')
+    );
+
+    let user: PlexUserInfo | undefined;
+    if (userResp.ok) {
+      const u = await userResp.json();
+      user = {
+        username: u.username || u.title,
+        email: u.email,
+        thumb: u.thumb,
+      };
+    }
+
+    const result: MembershipResult = { hasAccess: !!match, user };
+    membershipCache.set(cacheKey, { result, expiresAt: now + MEMBERSHIP_TTL_MS });
+    return result;
+  } catch (err) {
+    console.error('[Plex] Membership verification failed:', err);
+    const result: MembershipResult = { hasAccess: false };
+    membershipCache.set(cacheKey, { result, expiresAt: now + 30 * 1000 });
+    return result;
+  }
+}
+
+// Public endpoint: verify if the supplied user Plex token has access to the configured server
+router.post('/verify-access', async (req, res) => {
+  try {
+    const { plexToken } = req.body || {};
+    if (!plexToken || typeof plexToken !== 'string') {
+      return res.status(400).json({ error: 'plexToken is required' });
+    }
+    const result = await verifyPlexServerMembership(plexToken);
+    res.json(result);
+  } catch (error) {
+    console.error('[Plex] /verify-access error:', error);
+    res.status(500).json({ error: 'Failed to verify access' });
+  }
+});
 
 // Test Plex connection
 router.post('/test-connection', async (req, res) => {

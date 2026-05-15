@@ -16,6 +16,7 @@ import {
 } from '../middleware/auth.js';
 import { encryptToken, decryptToken } from '../services/encryption.js';
 import { loadCorsOrigins } from '../index.js';
+import { invalidateServerIdCache } from './plex.js';
 
 const router = Router();
 
@@ -347,6 +348,7 @@ router.post('/get-session-settings', (req, res) => {
           enable_chat: settings.enable_chat,
           auto_cache_refresh: settings.auto_cache_refresh,
           hard_filter_preferences: settings.hard_filter_preferences,
+          require_plex_member: settings.require_plex_member,
         }
       });
     } else {
@@ -402,6 +404,9 @@ router.post('/save-config', requireAdmin, (req, res) => {
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
     `);
     stmt.run('plex', JSON.stringify(configToStore));
+
+    // Invalidate the cached server machineIdentifier — URL/token may have changed
+    invalidateServerIdCache();
 
     res.json({ success: true });
   } catch (error) {

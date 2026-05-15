@@ -1,7 +1,7 @@
 // File: src/components/admin/AdminSettingsTab.tsx
 import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
-import { Loader2, Save, Shuffle, ListOrdered, Hash, Upload, Trash2, Image, ExternalLink, Tag, X, Plus, Star, QrCode, Smartphone, Type, AlertTriangle, Filter } from "lucide-react";
+import { Loader2, Save, Shuffle, ListOrdered, Hash, Upload, Trash2, Image, ExternalLink, Tag, X, Plus, Star, QrCode, Smartphone, Type, AlertTriangle, Filter, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -22,6 +22,7 @@ interface SessionSettings {
   rating_display: "critic" | "audience" | "both";
   enable_lobby_qr: boolean;
   hard_filter_preferences: boolean;
+  require_plex_member: boolean;
 }
 
 const DEFAULT_SETTINGS: SessionSettings = {
@@ -36,6 +37,7 @@ const DEFAULT_SETTINGS: SessionSettings = {
   rating_display: "critic",
   enable_lobby_qr: false,
   hard_filter_preferences: true,
+  require_plex_member: false,
 };
 
 interface PwaSettings {
@@ -104,6 +106,7 @@ export const AdminSettingsTab = () => {
           rating_display: data.settings.rating_display || "critic",
           enable_lobby_qr: data.settings.enable_lobby_qr ?? false,
           hard_filter_preferences: data.settings.hard_filter_preferences ?? true,
+          require_plex_member: data.settings.require_plex_member ?? false,
         });
       }
     } catch (err) {
@@ -695,6 +698,33 @@ export const AdminSettingsTab = () => {
             onCheckedChange={(checked) => {
               haptics.selection();
               setSettings(s => ({ ...s, enable_lobby_qr: checked }));
+            }}
+          />
+        </div>
+      </motion.div>
+
+      {/* Require Plex Server Access Toggle */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.47 }}
+        className="glass-card rounded-xl p-4"
+      >
+        <div className="flex items-center justify-between">
+          <div className="flex-1">
+            <div className="flex items-center gap-2">
+              <ShieldCheck size={20} className="text-primary" />
+              <h2 className="font-semibold text-foreground">Require Plex Server Access</h2>
+            </div>
+            <p className="text-sm text-muted-foreground mt-1">
+              Only allow users with access to your Plex server to use the app.
+            </p>
+          </div>
+          <Switch
+            checked={settings.require_plex_member}
+            onCheckedChange={(checked) => {
+              haptics.selection();
+              setSettings(s => ({ ...s, require_plex_member: checked }));
             }}
           />
         </div>

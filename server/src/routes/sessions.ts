@@ -1,8 +1,43 @@
 // File: server/src/routes/sessions.ts
 import { Router } from 'express';
+import { Response } from 'express';
 import { getDb, generateId } from '../db.js';
 import { broadcastToSession } from '../websocket.js';
 import { encryptToken } from '../services/encryption.js';
+import { verifyPlexServerMembership } from './plex.js';
+
+function isPlexMemberGateEnabled(db: any): boolean {
+  const row = db.prepare('SELECT value FROM app_config WHERE key = ?').get('session_settings') as { value: string } | undefined;
+  if (!row) return false;
+  try {
+    const settings = JSON.parse(row.value);
+    return !!settings.require_plex_member;
+  } catch {
+    return false;
+  }
+}
+
+// Returns true if request passes the gate (or gate is disabled); otherwise responds with 403 and returns false.
+async function enforcePlexMemberGate(
+  db: any,
+  res: Response,
+  plexToken: string | undefined,
+  isGuest: boolean
+): Promise<boolean> {
+  if (!isPlexMemberGateEnabled(db)) return true;
+
+  if (isGuest || !plexToken || typeof plexToken !== 'string') {
+    res.status(403).json({ error: 'Plex sign-in is required to use this app.' });
+    return false;
+  }
+
+  const { hasAccess } = await verifyPlexServerMembership(plexToken);
+  if (!hasAccess) {
+    res.status(403).json({ error: 'Your Plex account does not have access to this server.' });
+    return false;
+  }
+  return true;
+}
 
 const router = Router();
 
@@ -34,22 +69,27 @@ function countSessionMatches(db: any, sessionId: string): number {
 }
 
 // Create session
-router.post('/create', (req, res) => {
+router.post('/create', async (req, res) => {
   try {
     const { mediaType, displayName, isGuest, plexToken, timedDuration, useWatchlist, matchTarget } = req.body;
     const { plexToken: _logToken, ...safeLogBody } = req.body;
     console.log('[Sessions] Create request body:', JSON.stringify(safeLogBody));
 
-    // Encrypt Plex token before storing
-    const encryptedPlexToken = encryptToken(plexToken);
-    
     // Validate required fields
     if (!displayName || typeof displayName !== 'string' || !displayName.trim()) {
       console.log('[Sessions] Create failed: Display name is required');
       return res.status(400).json({ error: 'Display name is required' });
     }
-    
+
     const db = getDb();
+
+    // Enforce optional "require Plex server access" gate
+    if (!(await enforcePlexMemberGate(db, res, plexToken, !!isGuest))) {
+      return;
+    }
+
+    // Encrypt Plex token before storing
+    const encryptedPlexToken = encryptToken(plexToken);
     
     // Generate unique code
     let code = generateSessionCode();
@@ -341,22 +381,27 @@ router.patch('/:id', (req, res) => {
 });
 
 // Join session
-router.post('/:id/join', (req, res) => {
+router.post('/:id/join', async (req, res) => {
   try {
     const { id } = req.params;
     const { displayName, isGuest, plexToken } = req.body;
-    
+
     if (!displayName || typeof displayName !== 'string' || !displayName.trim()) {
       return res.status(400).json({ error: 'Display name is required' });
     }
-    
+
     const db = getDb();
-    
+
     const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(id);
     if (!session) {
       return res.status(404).json({ error: 'Session not found' });
     }
-    
+
+    // Enforce optional "require Plex server access" gate
+    if (!(await enforcePlexMemberGate(db, res, plexToken, !!isGuest))) {
+      return;
+    }
+
     const participantId = generateId();
     const encryptedPlexToken = encryptToken(plexToken);
 
