@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { ArrowLeft, Save, Server, CheckCircle, XCircle, Loader2, Library, KeyRound, RefreshCw, Database, Settings, Clock, AlertCircle, History, Globe, Plus, X } from "lucide-react";
+import { ArrowLeft, Save, Server, CheckCircle, XCircle, Loader2, Library, KeyRound, RefreshCw, Database, Settings, Clock, AlertCircle, History, Globe, Plus, X, BarChart3 } from "lucide-react";
 import { useHaptics } from "@/hooks/useHaptics";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,6 +13,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { AdminSettingsTab } from "@/components/admin/AdminSettingsTab";
 import { SessionHistoryTab } from "@/components/admin/SessionHistoryTab";
+import { StatisticsTab } from "@/components/admin/StatisticsTab";
 import { CacheProgressIndicator } from "@/components/admin/CacheProgressIndicator";
 import { VersionInfo } from "@/components/admin/VersionInfo";
 
@@ -75,7 +76,7 @@ const Admin = () => {
   const [lastCacheRefresh, setLastCacheRefresh] = useState<LastCacheRefresh | null>(null);
   const [autoCacheRefresh, setAutoCacheRefresh] = useState(false);
   
-  const [activeTab, setActiveTab] = useState<"connection" | "settings" | "history">("connection");
+  const [activeTab, setActiveTab] = useState<"connection" | "settings" | "history" | "stats">("connection");
   const [cacheProgress, setCacheProgress] = useState<CacheRefreshProgress | null>(null);
   const [corsOrigins, setCorsOrigins] = useState<string[]>([]);
   const [newOrigin, setNewOrigin] = useState("");
@@ -566,6 +567,21 @@ const Admin = () => {
             <History size={14} />
             <span className="hidden sm:inline">History</span>
           </button>
+          <button
+            onClick={() => {
+              haptics.selection();
+              setActiveTab("stats");
+            }}
+            className={cn(
+              "flex-1 py-2 px-3 rounded-md text-sm font-medium transition-all flex items-center justify-center gap-1",
+              activeTab === "stats"
+                ? "bg-background text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            <BarChart3 size={14} />
+            <span className="hidden sm:inline">Stats</span>
+          </button>
         </div>
       </div>
 
@@ -578,6 +594,8 @@ const Admin = () => {
           <AdminSettingsTab />
         ) : activeTab === "history" ? (
           <SessionHistoryTab />
+        ) : activeTab === "stats" ? (
+          <StatisticsTab />
         ) : (
           <>
             <VersionInfo />

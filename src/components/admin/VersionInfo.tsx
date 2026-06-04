@@ -1,7 +1,7 @@
 // File: src/components/admin/VersionInfo.tsx
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Info, ExternalLink, RefreshCw, CheckCircle, AlertTriangle, Loader2 } from 'lucide-react';
+import { Info, ExternalLink, RefreshCw, CheckCircle, AlertTriangle, Loader2, GitBranch } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { versionApi, VersionInfo as VersionInfoType } from '@/lib/api';
 import { cn } from '@/lib/utils';
@@ -135,6 +135,21 @@ export const VersionInfo = () => {
                 View on GitHub
                 <ExternalLink size={14} />
               </a>
+            )}
+          </div>
+        ) : versionInfo?.isDevelopBuild ? (
+          <div className="p-3 rounded-lg bg-primary/10 border border-primary/20 space-y-2">
+            <div className="flex items-center gap-2">
+              <GitBranch size={18} className="text-primary" />
+              <span className="font-medium text-foreground">Develop build</span>
+            </div>
+            {versionInfo.latestVersion && (
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-muted-foreground">Latest release</span>
+                <span className="font-mono text-primary">
+                  {versionInfo.latestVersion.startsWith('v') ? versionInfo.latestVersion : `v${versionInfo.latestVersion}`}
+                </span>
+              </div>
             )}
           </div>
         ) : versionInfo?.latestVersion ? (

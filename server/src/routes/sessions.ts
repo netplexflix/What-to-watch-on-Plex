@@ -683,9 +683,15 @@ function recordSessionHistory(db: any, sessionId: string, winnerItemKey: string 
     
     const participantNames = participants.map(p => p.display_name);
     
+    const sessionType = session.match_target
+      ? 'target'
+      : session.timed_duration
+      ? 'timed'
+      : 'classic';
+
     db.prepare(`
-      INSERT INTO session_history (id, session_code, participants, winner_item_key, winner_title, winner_thumb, media_type, was_timed, completed_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      INSERT INTO session_history (id, session_code, participants, winner_item_key, winner_title, winner_thumb, media_type, was_timed, session_type, completed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `).run(
       generateId(),
       session.code,
@@ -694,7 +700,8 @@ function recordSessionHistory(db: any, sessionId: string, winnerItemKey: string 
       winnerTitle,
       winnerThumb,
       session.media_type,
-      (session.timed_duration || session.match_target) ? 1 : 0
+      (session.timed_duration || session.match_target) ? 1 : 0,
+      sessionType
     );
     
     console.log(`[Sessions] Recorded session ${session.code} in history`);

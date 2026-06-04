@@ -1,8 +1,9 @@
 // File: src/components/admin/SessionHistoryTab.tsx
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { History, Loader2, Trash2, Users, Trophy, Clock, Film, Tv } from "lucide-react";
+import { History, Loader2, Trash2, Users, Trophy, Clock, Film, Tv, Target, Layers, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { adminApi } from "@/lib/api";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -17,6 +18,7 @@ interface SessionHistoryItem {
   winner_thumb: string | null;
   media_type: string | null;
   was_timed: boolean;
+  session_type: 'classic' | 'timed' | 'target' | null;
   completed_at: string;
 }
 
@@ -26,17 +28,25 @@ export const SessionHistoryTab = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [total, setTotal] = useState(0);
   const [isClearing, setIsClearing] = useState(false);
+  const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
 
   useEffect(() => {
-    loadHistory();
-  }, []);
+    const t = setTimeout(() => setDebouncedQuery(query), 300);
+    return () => clearTimeout(t);
+  }, [query]);
 
-  const loadHistory = async () => {
+  useEffect(() => {
+    loadHistory(debouncedQuery);
+  }, [debouncedQuery]);
+
+  const loadHistory = async (q: string = "") => {
+    setIsLoading(true);
     try {
-      const { data, error } = await adminApi.getSessionHistory(50, 0);
-      
+      const { data, error } = await adminApi.getSessionHistory(50, 0, q);
+
       if (error) throw new Error(error);
-      
+
       if (data) {
         setHistory(data.history);
         setTotal(data.total);
@@ -80,13 +90,7 @@ export const SessionHistoryTab = () => {
     return date.toLocaleDateString() + ' at ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <Loader2 className="animate-spin text-primary" size={32} />
-      </div>
-    );
-  }
+  const hasFilter = debouncedQuery.trim().length > 0;
 
   return (
     <div className="space-y-6">
@@ -101,14 +105,15 @@ export const SessionHistoryTab = () => {
           <h2 className="font-semibold text-foreground">Session History</h2>
           <span className="text-sm text-muted-foreground">({total} sessions)</span>
         </div>
-        
-        {history.length > 0 && (
+
+        {(history.length > 0 || hasFilter) && (
           <Button
             onClick={handleClearHistory}
-            disabled={isClearing}
+            disabled={isClearing || hasFilter}
             variant="outline"
             size="sm"
             className="text-destructive hover:text-destructive hover:bg-destructive/10"
+            title={hasFilter ? "Clear the filter to delete all history" : undefined}
           >
             {isClearing ? (
               <Loader2 className="animate-spin" size={16} />
@@ -122,17 +127,34 @@ export const SessionHistoryTab = () => {
         )}
       </motion.div>
 
+      {/* Filter */}
+      <div className="relative">
+        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Filter by participant name…"
+          className="pl-9 bg-secondary border-secondary"
+        />
+      </div>
+
       {/* History List */}
-      {history.length === 0 ? (
+      {isLoading ? (
+        <div className="flex items-center justify-center py-12">
+          <Loader2 className="animate-spin text-primary" size={32} />
+        </div>
+      ) : history.length === 0 ? (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           className="text-center py-12"
         >
           <History size={48} className="mx-auto text-muted-foreground mb-4" />
-          <p className="text-muted-foreground">No session history yet</p>
+          <p className="text-muted-foreground">
+            {hasFilter ? "No sessions match your filter" : "No session history yet"}
+          </p>
           <p className="text-sm text-muted-foreground mt-1">
-            Completed sessions will appear here
+            {hasFilter ? "Try a different participant name" : "Completed sessions will appear here"}
           </p>
         </motion.div>
       ) : (
@@ -194,10 +216,20 @@ export const SessionHistoryTab = () => {
                         {item.media_type}
                       </span>
                     )}
-                    {item.was_timed && (
+                    {item.session_type === 'target' ? (
+                      <span className="flex items-center gap-1 text-primary">
+                        <Target size={12} />
+                        Target
+                      </span>
+                    ) : item.session_type === 'timed' || (!item.session_type && item.was_timed) ? (
                       <span className="flex items-center gap-1 text-primary">
                         <Clock size={12} />
                         Timed
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1 text-primary">
+                        <Layers size={12} />
+                        Classic
                       </span>
                     )}
                   </div>

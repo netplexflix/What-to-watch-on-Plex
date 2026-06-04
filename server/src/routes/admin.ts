@@ -635,25 +635,34 @@ router.get('/session-history', requireAdmin, (req, res) => {
     const db = getDb();
     const limit = parseInt(req.query.limit as string) || 50;
     const offset = parseInt(req.query.offset as string) || 0;
-    
+    const q = ((req.query.q as string) || '').trim();
+
     // Sanitize limit and offset to prevent abuse
     const safeLimit = Math.min(Math.max(1, limit), 200);
     const safeOffset = Math.max(0, offset);
-    
-    const history = db.prepare(`
-      SELECT * FROM session_history 
-      ORDER BY completed_at DESC 
-      LIMIT ? OFFSET ?
-    `).all(safeLimit, safeOffset) as any[];
-    
-    const total = db.prepare('SELECT COUNT(*) as count FROM session_history').get() as { count: number };
-    
+
+    const where = q ? 'WHERE LOWER(participants) LIKE ?' : '';
+    const likePattern = `%${q.toLowerCase()}%`;
+
+    const history = q
+      ? db.prepare(
+          `SELECT * FROM session_history ${where} ORDER BY completed_at DESC LIMIT ? OFFSET ?`
+        ).all(likePattern, safeLimit, safeOffset) as any[]
+      : db.prepare(
+          `SELECT * FROM session_history ORDER BY completed_at DESC LIMIT ? OFFSET ?`
+        ).all(safeLimit, safeOffset) as any[];
+
+    const total = (q
+      ? db.prepare(`SELECT COUNT(*) as count FROM session_history ${where}`).get(likePattern)
+      : db.prepare('SELECT COUNT(*) as count FROM session_history').get()
+    ) as { count: number };
+
     const parsed = history.map(h => ({
       ...h,
       participants: JSON.parse(h.participants),
       was_timed: !!h.was_timed,
     }));
-    
+
     res.json({ history: parsed, total: total.count });
   } catch (error) {
     console.error('[Admin] Error getting session history:', error);
@@ -670,6 +679,185 @@ router.post('/clear-session-history', requireAdmin, (req, res) => {
   } catch (error) {
     console.error('[Admin] Error clearing session history:', error);
     res.status(500).json({ error: 'Failed to clear session history' });
+  }
+});
+
+// --- Statistics helpers ---
+type StatsUnit = 'days' | 'weeks' | 'months' | 'years';
+
+function getBucketStart(date: Date, unit: StatsUnit): Date {
+  const d = new Date(date);
+  if (unit === 'days') {
+    d.setUTCHours(0, 0, 0, 0);
+  } else if (unit === 'weeks') {
+    d.setUTCHours(0, 0, 0, 0);
+    const day = d.getUTCDay();
+    const diff = day === 0 ? -6 : 1 - day; // ISO Monday
+    d.setUTCDate(d.getUTCDate() + diff);
+  } else if (unit === 'months') {
+    d.setUTCDate(1);
+    d.setUTCHours(0, 0, 0, 0);
+  } else if (unit === 'years') {
+    d.setUTCMonth(0, 1);
+    d.setUTCHours(0, 0, 0, 0);
+  }
+  return d;
+}
+
+function addUnits(date: Date, n: number, unit: StatsUnit): Date {
+  const d = new Date(date);
+  if (unit === 'days') d.setUTCDate(d.getUTCDate() + n);
+  else if (unit === 'weeks') d.setUTCDate(d.getUTCDate() + n * 7);
+  else if (unit === 'months') d.setUTCMonth(d.getUTCMonth() + n);
+  else if (unit === 'years') d.setUTCFullYear(d.getUTCFullYear() + n);
+  return d;
+}
+
+function toSqliteUtc(d: Date): string {
+  return d.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+function parseRowDate(s: string): Date {
+  // SQLite datetime('now') format: "YYYY-MM-DD HH:MM:SS" (UTC)
+  return new Date(s.replace(' ', 'T') + 'Z');
+}
+
+// Get aggregate statistics over a configurable range
+router.get('/stats', requireAdmin, (req, res) => {
+  try {
+    const db = getDb();
+    const amountRaw = parseInt(req.query.amount as string);
+    const unitRaw = (req.query.unit as string) || 'days';
+    const amount = Math.min(Math.max(1, isNaN(amountRaw) ? 30 : amountRaw), 999);
+    const allowedUnits: StatsUnit[] = ['days', 'weeks', 'months', 'years'];
+    const unit: StatsUnit = (allowedUnits as string[]).includes(unitRaw) ? (unitRaw as StatsUnit) : 'days';
+
+    const now = new Date();
+    const currentBucket = getBucketStart(now, unit);
+    const firstBucket = addUnits(currentBucket, -(amount - 1), unit);
+    const endBucket = addUnits(currentBucket, 1, unit); // exclusive upper bound
+
+    const rows = db.prepare(
+      `SELECT participants, winner_title, winner_thumb, media_type, was_timed, session_type, completed_at
+       FROM session_history
+       WHERE completed_at >= ?
+       ORDER BY completed_at ASC`
+    ).all(toSqliteUtc(firstBucket)) as any[];
+
+    // Pre-fill activity buckets
+    const activity: Array<{ bucketStartISO: string; count: number }> = [];
+    for (let i = 0; i < amount; i++) {
+      activity.push({ bucketStartISO: addUnits(firstBucket, i, unit).toISOString(), count: 0 });
+    }
+
+    const sessionTypes = { classic: 0, timed: 0, target: 0 };
+    const mediaTypes: Record<string, number> = {};
+    const participantCounts = new Map<string, number>();
+    const participantDistribution = new Map<number, number>();
+    const winnerCounts = new Map<string, { count: number; thumb: string | null }>();
+    const uniqueParticipants = new Set<string>();
+    let totalParticipantSlots = 0;
+
+    for (const row of rows) {
+      const completedAt = parseRowDate(row.completed_at);
+      const bucketStart = getBucketStart(completedAt, unit);
+      const elapsedMs = bucketStart.getTime() - firstBucket.getTime();
+      let idx = -1;
+      // For months/years, ms-per-unit isn't constant — locate by iteration of pre-filled buckets.
+      // Cheap because amount is capped at 999.
+      for (let i = 0; i < activity.length; i++) {
+        if (activity[i].bucketStartISO === bucketStart.toISOString()) {
+          idx = i;
+          break;
+        }
+      }
+      if (idx === -1 && (unit === 'days' || unit === 'weeks')) {
+        const msPer = unit === 'days' ? 86400000 : 86400000 * 7;
+        idx = Math.floor(elapsedMs / msPer);
+      }
+      if (idx >= 0 && idx < activity.length) activity[idx].count += 1;
+
+      // Session type (with legacy fallback)
+      if (row.session_type === 'target') sessionTypes.target += 1;
+      else if (row.session_type === 'timed' || (!row.session_type && row.was_timed)) sessionTypes.timed += 1;
+      else sessionTypes.classic += 1;
+
+      // Media type
+      if (row.media_type) {
+        mediaTypes[row.media_type] = (mediaTypes[row.media_type] || 0) + 1;
+      }
+
+      // Participants
+      try {
+        const names: string[] = JSON.parse(row.participants) || [];
+        totalParticipantSlots += names.length;
+        participantDistribution.set(
+          names.length,
+          (participantDistribution.get(names.length) || 0) + 1
+        );
+        for (const name of names) {
+          uniqueParticipants.add(name);
+          participantCounts.set(name, (participantCounts.get(name) || 0) + 1);
+        }
+      } catch {
+        // ignore malformed rows
+      }
+
+      // Winners
+      if (row.winner_title) {
+        const existing = winnerCounts.get(row.winner_title);
+        if (existing) {
+          existing.count += 1;
+          if (!existing.thumb && row.winner_thumb) existing.thumb = row.winner_thumb;
+        } else {
+          winnerCounts.set(row.winner_title, { count: 1, thumb: row.winner_thumb || null });
+        }
+      }
+    }
+
+    const topParticipants = Array.from(participantCounts.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
+
+    const topWinners = Array.from(winnerCounts.entries())
+      .map(([title, v]) => ({ title, thumb: v.thumb, count: v.count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
+
+    const totalSessions = rows.length;
+    const avgParticipantsPerSession = totalSessions > 0
+      ? Math.round((totalParticipantSlots / totalSessions) * 10) / 10
+      : 0;
+
+    const participantDistributionObj = Object.fromEntries(
+      Array.from(participantDistribution.entries())
+        .sort((a, b) => a[0] - b[0])
+        .map(([count, sessions]) => [String(count), sessions])
+    );
+
+    res.json({
+      range: {
+        amount,
+        unit,
+        fromISO: firstBucket.toISOString(),
+        toISO: endBucket.toISOString(),
+      },
+      kpis: {
+        totalSessions,
+        uniqueParticipants: uniqueParticipants.size,
+        avgParticipantsPerSession,
+      },
+      activity,
+      sessionTypes,
+      mediaTypes,
+      participantDistribution: participantDistributionObj,
+      topParticipants,
+      topWinners,
+    });
+  } catch (error) {
+    console.error('[Admin] Error getting stats:', error);
+    res.status(500).json({ error: 'Failed to get stats' });
   }
 });
 

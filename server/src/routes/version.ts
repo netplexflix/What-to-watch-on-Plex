@@ -73,23 +73,27 @@ router.get('/', async (_req: Request, res: Response) => {
     const latestRelease = await fetchLatestRelease();
     
     let updateAvailable = false;
+    let isDevelopBuild = false;
     let latestVersion: string | null = null;
     let releaseUrl: string | null = null;
     let releaseNotes: string | null = null;
     let publishedAt: string | null = null;
-    
+
     if (latestRelease) {
       latestVersion = latestRelease.tag_name;
       releaseUrl = latestRelease.html_url;
       releaseNotes = latestRelease.body;
       publishedAt = latestRelease.published_at;
-      updateAvailable = compareVersions(APP_VERSION, latestVersion) > 0;
+      const cmp = compareVersions(APP_VERSION, latestVersion);
+      updateAvailable = cmp > 0;
+      isDevelopBuild = cmp < 0;
     }
-    
+
     res.json({
       currentVersion: APP_VERSION,
       latestVersion,
       updateAvailable,
+      isDevelopBuild,
       releaseUrl,
       releaseNotes,
       publishedAt,

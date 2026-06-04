@@ -237,8 +237,23 @@ export const adminApi = {
   deletePwaIcon: () =>
     fetchApiAdmin<{ success: boolean }>('/admin/delete-pwa-icon', { method: 'POST' }),
 
-  getSessionHistory: (limit = 50, offset = 0) =>
-    fetchApiAdminGet<{ history: any[]; total: number }>(`/admin/session-history?limit=${limit}&offset=${offset}`),
+  getSessionHistory: (limit = 50, offset = 0, q = '') => {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (q) params.set('q', q);
+    return fetchApiAdminGet<{ history: any[]; total: number }>(`/admin/session-history?${params.toString()}`);
+  },
+
+  getStats: (amount: number, unit: 'days' | 'weeks' | 'months' | 'years') =>
+    fetchApiAdminGet<{
+      range: { amount: number; unit: string; fromISO: string; toISO: string };
+      kpis: { totalSessions: number; uniqueParticipants: number; avgParticipantsPerSession: number };
+      activity: Array<{ bucketStartISO: string; count: number }>;
+      sessionTypes: { classic: number; timed: number; target: number };
+      mediaTypes: Record<string, number>;
+      participantDistribution: Record<string, number>;
+      topParticipants: Array<{ name: string; count: number }>;
+      topWinners: Array<{ title: string; thumb: string | null; count: number }>;
+    }>(`/admin/stats?amount=${amount}&unit=${unit}`),
 
   clearSessionHistory: () =>
     fetchApiAdmin<{ success: boolean }>('/admin/clear-session-history', { method: 'POST' }),
@@ -270,6 +285,7 @@ export interface VersionInfo {
   currentVersion: string;
   latestVersion: string | null;
   updateAvailable: boolean;
+  isDevelopBuild: boolean;
   releaseUrl: string | null;
   releaseNotes: string | null;
   publishedAt: string | null;

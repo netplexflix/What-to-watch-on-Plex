@@ -174,11 +174,20 @@ function runMigrations(db: DatabaseType) {
       winner_thumb TEXT,
       media_type TEXT,
       was_timed INTEGER DEFAULT 0,
+      session_type TEXT DEFAULT NULL,
       completed_at TEXT DEFAULT (datetime('now'))
     );
-    
+
     CREATE INDEX IF NOT EXISTS idx_session_history_completed ON session_history(completed_at);
   `);
+
+  const historyColumns = db.prepare("PRAGMA table_info(session_history)").all() as { name: string }[];
+  const historyColumnNames = historyColumns.map(c => c.name);
+
+  if (!historyColumnNames.includes('session_type')) {
+    console.log('[DB Migration] Adding session_type column to session_history');
+    db.exec("ALTER TABLE session_history ADD COLUMN session_type TEXT DEFAULT NULL");
+  }
 
   // Create media_labels_cache table if not exists
   db.exec(`
