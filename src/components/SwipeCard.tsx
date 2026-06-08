@@ -5,6 +5,7 @@ import { X, Heart, RotateCcw, Star, Calendar, Clock, Users, ImageOff, Globe } fr
 import { cn } from "@/lib/utils";
 import { IconButton } from "@/components/ui/IconButton";
 import { useHaptics } from "@/hooks/useHaptics";
+import { isImagePrefetched, markImageLoaded } from "@/lib/imagePrefetch";
 import type { PlexItem } from "@/types/session";
 
 interface SwipeCardProps {
@@ -20,7 +21,7 @@ export const SwipeCard = ({ item, onSwipe, onUndo, className, sessionMediaType, 
   const [isFlipped, setIsFlipped] = useState(false);
   const [exitDirection, setExitDirection] = useState<"left" | "right" | null>(null);
   const [isDragging, setIsDragging] = useState(false);
-  const [imageLoaded, setImageLoaded] = useState(false);
+  const [imageLoaded, setImageLoaded] = useState(() => isImagePrefetched(item.thumb));
   const [imageError, setImageError] = useState(false);
   const constraintsRef = useRef(null);
   const haptics = useHaptics();
@@ -39,11 +40,11 @@ export const SwipeCard = ({ item, onSwipe, onUndo, className, sessionMediaType, 
       cardKey.current = item.ratingKey;
       setIsFlipped(false);
       setExitDirection(null);
-      setImageLoaded(false);
+      setImageLoaded(isImagePrefetched(item.thumb));
       setImageError(false);
       x.set(0);
     }
-  }, [item.ratingKey, x]);
+  }, [item.ratingKey, item.thumb, x]);
 
   // Preload image
   useEffect(() => {
@@ -52,11 +53,12 @@ export const SwipeCard = ({ item, onSwipe, onUndo, className, sessionMediaType, 
       return;
     }
 
-    setImageLoaded(false);
+    setImageLoaded(isImagePrefetched(item.thumb));
     setImageError(false);
 
     const img = new Image();
     img.onload = () => {
+      markImageLoaded(item.thumb);
       setImageLoaded(true);
       setImageError(false);
     };
@@ -232,7 +234,10 @@ export const SwipeCard = ({ item, onSwipe, onUndo, className, sessionMediaType, 
                     "w-full h-full object-cover transition-opacity duration-300",
                     imageLoaded ? "opacity-100" : "opacity-0"
                   )}
-                  onLoad={() => setImageLoaded(true)}
+                  onLoad={() => {
+                    markImageLoaded(item.thumb);
+                    setImageLoaded(true);
+                  }}
                   onError={() => setImageError(true)}
                 />
               )}

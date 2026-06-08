@@ -2320,10 +2320,6 @@ function createMediaItem(detailedItem: any, libraryType: string, languages: stri
     languages,
     labels,
     guids,
-    Genre: detailedItem.Genre,
-    Director: detailedItem.Director,
-    Role: detailedItem.Role,
-    Country: detailedItem.Country,
   };
 }
 
@@ -2386,25 +2382,45 @@ function matchesEra(year: number, era: string): boolean {
   }
 }
 
+// Short-lived cache for per-user watched lookups
+const WATCHED_CACHE_TTL_MS = 3 * 60 * 1000;
+const watchedItemsCache = new Map<string, { keys: Set<string>; expires: number }>();
+
 async function getWatchedItems(
   plexUrl: string,
   userPlexToken: string,
   libraryKeys: string[]
 ): Promise<Set<string>> {
+  const cacheKey = `${userPlexToken}:${[...libraryKeys].sort().join(',')}`;
+  const now = Date.now();
+  const cachedEntry = watchedItemsCache.get(cacheKey);
+  if (cachedEntry && cachedEntry.expires > now) {
+    console.log(`[Plex] Watched items served from cache (${cachedEntry.keys.size} items)`);
+    return cachedEntry.keys;
+  }
+
   const watchedKeys = new Set<string>();
-  
+
   for (const libraryKey of libraryKeys) {
     try {
-      const response = await fetch(
-        `${plexUrl}/library/sections/${libraryKey}/all?X-Plex-Token=${userPlexToken}&unwatched=0`,
+      // Ask Plex for watched items only (viewCount>=1)
+      let response = await fetch(
+        `${plexUrl}/library/sections/${libraryKey}/all?viewCount%3E=1&X-Plex-Token=${userPlexToken}`,
         { headers: { Accept: 'application/json' } }
       );
-      
+
+      if (!response.ok) {
+        response = await fetch(
+          `${plexUrl}/library/sections/${libraryKey}/all?X-Plex-Token=${userPlexToken}&unwatched=0`,
+          { headers: { Accept: 'application/json' } }
+        );
+      }
+
       if (!response.ok) continue;
-      
+
       const data = await response.json();
       const items = data.MediaContainer?.Metadata || [];
-      
+
       for (const item of items) {
         if (item.viewCount && item.viewCount > 0) {
           watchedKeys.add(item.ratingKey);
@@ -2414,7 +2430,8 @@ async function getWatchedItems(
       console.error(`[Plex] Error fetching watched items for library ${libraryKey}:`, e);
     }
   }
-  
+
+  watchedItemsCache.set(cacheKey, { keys: watchedKeys, expires: now + WATCHED_CACHE_TTL_MS });
   console.log(`[Plex] Found ${watchedKeys.size} watched items for user`);
   return watchedKeys;
 }

@@ -13,9 +13,23 @@ export function initDatabase(dataPath: string): DatabaseType {
   }
 
   const dbPath = path.join(dataPath, 'wtw.db');
+  const desiredMode = (process.env.SQLITE_JOURNAL_MODE || 'WAL').toUpperCase();
+
   db = new Database(dbPath);
-  
-  db.pragma('journal_mode = WAL');
+  try {
+    // Normal path: SQLite manages the WAL index in a shared-memory '-shm' file.
+    db.pragma(`journal_mode = ${desiredMode}`);
+  } catch (err) {
+    console.warn(
+      `[DB] '${desiredMode}' journal mode failed over this filesystem ` +
+      `(${err instanceof Error ? err.message : String(err)}); ` +
+      `reopening with EXCLUSIVE locking (in-memory WAL index, no -shm file).`
+    );
+    try { db.close(); } catch { /* ignore */ }
+    db = new Database(dbPath);
+    db.pragma('locking_mode = EXCLUSIVE');
+    db.pragma(`journal_mode = ${desiredMode}`);
+  }
   
   // Create base tables
   db.exec(`
