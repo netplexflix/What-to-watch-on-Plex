@@ -2,16 +2,27 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Loader2, RotateCcw, Clock, Target } from "lucide-react";
+import { Loader2, RotateCcw, Clock, Target, WifiOff } from "lucide-react";
 import { Logo } from "@/components/Logo";
 import { SwipeCard } from "@/components/SwipeCard";
 import { Button } from "@/components/ui/button";
 import { sessionsApi, plexApi, adminApi } from "@/lib/api";
 import { wsClient } from "@/lib/websocket";
 import { getLocalSession } from "@/lib/sessionStore";
+import { prefetchImages } from "@/lib/imagePrefetch";
 import { toast } from "sonner";
 import { useHaptics } from "@/hooks/useHaptics";
 import type { PlexItem, Participant } from "@/types/session";
+
+class MediaLoadError extends Error {
+  constructor(detail?: string) {
+    super(detail || 'Failed to load media');
+    this.name = 'MediaLoadError';
+  }
+}
+
+// Prefetch x upcoming posters
+const PREFETCH_AHEAD = 5;
 
 // Genre name mapping - maps UI names to possible Plex genre names
 const GENRE_ALIASES: Record<string, string[]> = {
@@ -243,6 +254,7 @@ const Swipe = () => {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadingMessage, setLoadingMessage] = useState("Loading session...");
+  const [loadFailed, setLoadFailed] = useState(false);
   const [waitingForQuestions, setWaitingForQuestions] = useState(false);
   const [questionsProgress, setQuestionsProgress] = useState({ completed: 0, total: 0 });
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -272,6 +284,7 @@ const Swipe = () => {
   const [matchCount, setMatchCount] = useState<number>(0);
   
   const itemsLoadedRef = useRef(false);
+  const lastLoadArgsRef = useRef<{ sid: string; mediaType?: string | null; useWatchlist?: boolean } | null>(null);
   const sessionSeedRef = useRef<number | null>(null);
   const isInitializedRef = useRef(false);
   const currentIndexRef = useRef(0);
@@ -292,6 +305,15 @@ const Swipe = () => {
   useEffect(() => {
     currentIndexRef.current = currentIndex;
   }, [currentIndex]);
+
+  // Warm the browser cache for the next few posters 
+  useEffect(() => {
+    if (items.length === 0) return;
+    const upcoming = items
+      .slice(currentIndex + 1, currentIndex + 1 + PREFETCH_AHEAD)
+      .map((item) => item.thumb);
+    prefetchImages(upcoming);
+  }, [currentIndex, items]);
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
@@ -466,9 +488,12 @@ const Swipe = () => {
 
   const loadMediaItems = useCallback(async (sid: string, mediaType?: string | null, useWatchlist?: boolean) => {
     if (itemsLoadedRef.current) return;
-    
+
+    lastLoadArgsRef.current = { sid, mediaType, useWatchlist };
+
     try {
       setLoading(true);
+      setLoadFailed(false);
       setWaitingForQuestions(false);
       setLoadingMessage("Loading participants...");
       
@@ -544,18 +569,24 @@ const Swipe = () => {
       
       // If no watchlist items or not a watchlist session, load from cache normally
       if (fetchedItems.length === 0) {
-        const { data: cachedData } = await sessionsApi.getCachedMedia(mediaType || 'both');
-        
+        const { data: cachedData, error: cachedError } = await sessionsApi.getCachedMedia(mediaType || 'both');
+
         if (cachedData?.items && cachedData.items.length > 0) {
           console.log(`[Swipe] Loaded ${cachedData.items.length} items from cache`);
           fetchedItems = cachedData.items;
+        } else if (!cachedData) {
+          throw new MediaLoadError(cachedError);
         } else {
+          // Cache responded but is empty (not built yet) -> try a live Plex fetch.
           setLoadingMessage("Fetching media from Plex...");
-          const { data: mediaData } = await plexApi.getMedia(
+          const { data: mediaData, error: mediaError } = await plexApi.getMedia(
             mediaType || 'both',
             { ...aggregatedFilters, hardFilterPreferences }
           );
-          fetchedItems = mediaData?.items || [];
+          if (!mediaData) {
+            throw new MediaLoadError(mediaError);
+          }
+          fetchedItems = mediaData.items || [];
           console.log(`[Swipe] Loaded ${fetchedItems.length} items from Plex API`);
         }
       }
@@ -793,11 +824,23 @@ const Swipe = () => {
 
     } catch (error) {
       console.error("[Swipe] Error loading media:", error);
-      toast.error("Failed to load media");
+      if (error instanceof MediaLoadError) {
+        setLoadFailed(true);
+      } else {
+        toast.error("Failed to load media");
+      }
     } finally {
       setLoading(false);
     }
   }, [localSession, aggregatePreferences]);
+
+  const handleRetryLoad = useCallback(() => {
+    const args = lastLoadArgsRef.current;
+    if (!args) return;
+    itemsLoadedRef.current = false;
+    setLoadFailed(false);
+    loadMediaItems(args.sid, args.mediaType, args.useWatchlist);
+  }, [loadMediaItems]);
 
   useEffect(() => {
     if (!code || isInitializedRef.current) return;
@@ -1333,9 +1376,27 @@ const Swipe = () => {
     );
   }
 
+  if (loadFailed) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-background px-6">
+        <Logo size="md" className="justify-center mb-8" />
+        <WifiOff size={40} className="text-muted-foreground mb-4" />
+        <h1 className="text-2xl font-bold text-foreground mb-2">Couldn't Load Items</h1>
+        <p className="text-muted-foreground text-center mb-6 max-w-sm">
+          Your connection looks slow or unstable — this can happen on mobile roaming or weak Wi-Fi.
+          Your library is fine; let's try loading again.
+        </p>
+        <Button onClick={handleRetryLoad} className="bg-primary text-primary-foreground">
+          <RotateCcw size={18} className="mr-2" />
+          Retry
+        </Button>
+      </div>
+    );
+  }
+
   if (items.length === 0) {
     const isHost = localSession?.isHost || false;
-    
+
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-background px-6">
         <Logo size="md" className="justify-center mb-8" />

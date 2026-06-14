@@ -20,13 +20,36 @@ interface ApiResponse<T> {
   error?: string;
 }
 
+const DEFAULT_TIMEOUT_MS = 60000;
+
+async function fetchWithTimeout(
+  input: RequestInfo,
+  init: RequestInit = {},
+  timeoutMs = DEFAULT_TIMEOUT_MS
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function describeFetchError(error: unknown): string {
+  if (error instanceof DOMException && error.name === 'AbortError') {
+    return 'Request timed out';
+  }
+  return error instanceof Error ? error.message : 'Network error';
+}
+
 async function fetchApi<T>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<ApiResponse<T>> {
   try {
     const { headers: optionHeaders, ...restOptions } = options;
-    const response = await fetch(`${API_BASE}${endpoint}`, {
+    const response = await fetchWithTimeout(`${API_BASE}${endpoint}`, {
       ...restOptions,
       headers: {
         'Content-Type': 'application/json',
@@ -46,7 +69,7 @@ async function fetchApi<T>(
     const data = await response.json();
     return { data };
   } catch (error) {
-    return { error: error instanceof Error ? error.message : 'Network error' };
+    return { error: describeFetchError(error) };
   }
 }
 
@@ -127,7 +150,7 @@ async function fetchApiFormData<T>(
 // Special fetch for GET requests without Content-Type header
 async function fetchApiGet<T>(endpoint: string): Promise<ApiResponse<T>> {
   try {
-    const response = await fetch(`${API_BASE}${endpoint}`, {
+    const response = await fetchWithTimeout(`${API_BASE}${endpoint}`, {
       method: 'GET',
     });
 
@@ -139,7 +162,7 @@ async function fetchApiGet<T>(endpoint: string): Promise<ApiResponse<T>> {
     const data = await response.json();
     return { data };
   } catch (error) {
-    return { error: error instanceof Error ? error.message : 'Network error' };
+    return { error: describeFetchError(error) };
   }
 }
 

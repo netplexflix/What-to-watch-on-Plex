@@ -1,5 +1,6 @@
 // File: server/src/index.ts
 import express from 'express';
+import compression from 'compression';
 import cors from 'cors';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -91,6 +92,9 @@ app.use((req, res, next) => {
   );
   next();
 });
+
+// Compress responses (gzip/deflate)
+app.use(compression());
 
 app.use(express.json({ limit: '1mb' }));
 
