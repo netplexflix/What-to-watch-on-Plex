@@ -10,6 +10,7 @@ import { sessionsApi, plexApi, adminApi } from "@/lib/api";
 import { wsClient } from "@/lib/websocket";
 import { getLocalSession } from "@/lib/sessionStore";
 import { prefetchImages } from "@/lib/imagePrefetch";
+import { prefetchTrailers } from "@/lib/trailerCache";
 import { toast } from "sonner";
 import { useHaptics } from "@/hooks/useHaptics";
 import type { PlexItem, Participant } from "@/types/session";
@@ -265,6 +266,7 @@ const Swipe = () => {
   const [winnerItemKey, setWinnerItemKey] = useState<string | null>(null);
   const [sessionMediaType, setSessionMediaType] = useState<'movies' | 'shows' | 'both'>('both');
   const [ratingDisplay, setRatingDisplay] = useState<'critic' | 'audience' | 'both'>('critic');
+  const [enableTrailers, setEnableTrailers] = useState(false);
   const [labelRestrictions, setLabelRestrictions] = useState<{
     enabled: boolean;
     mode: 'include' | 'exclude';
@@ -306,14 +308,16 @@ const Swipe = () => {
     currentIndexRef.current = currentIndex;
   }, [currentIndex]);
 
-  // Warm the browser cache for the next few posters 
+  // Warm the browser cache for the next few posters
   useEffect(() => {
     if (items.length === 0) return;
-    const upcoming = items
-      .slice(currentIndex + 1, currentIndex + 1 + PREFETCH_AHEAD)
-      .map((item) => item.thumb);
-    prefetchImages(upcoming);
-  }, [currentIndex, items]);
+    const upcoming = items.slice(currentIndex + 1, currentIndex + 1 + PREFETCH_AHEAD);
+    prefetchImages(upcoming.map((item) => item.thumb));
+    // Also resolve trailers ahead so the current card's button appears without delay.
+    if (enableTrailers) {
+      prefetchTrailers([items[currentIndex], ...upcoming].filter(Boolean).map((item) => item.ratingKey));
+    }
+  }, [currentIndex, items, enableTrailers]);
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
@@ -523,6 +527,10 @@ const Swipe = () => {
         const { data: settingsData } = await adminApi.getSessionSettings();
         if (settingsData?.settings) {
           setRatingDisplay(settingsData.settings.rating_display || 'critic');
+          // Trailers on the swiping page only in 'on' mode (not 'voting' or 'off').
+          // Fall back to the legacy enable_trailers boolean for un-migrated configs.
+          const trailersMode = settingsData.settings.trailers_mode ?? (settingsData.settings.enable_trailers ? 'on' : 'off');
+          setEnableTrailers(trailersMode === 'on');
           hardFilterPreferences = settingsData.settings.hard_filter_preferences ?? true;
           if (settingsData.settings.enable_label_restrictions) {
             currentLabelRestrictions = {
@@ -1563,6 +1571,7 @@ const Swipe = () => {
               onUndo={swipeHistory.length > 0 ? handleUndo : undefined}
               sessionMediaType={sessionMediaType}
               ratingDisplay={ratingDisplay}
+              enableTrailers={enableTrailers}
             />
           )}
         </div>

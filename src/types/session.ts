@@ -70,4 +70,5 @@ export interface PlexItem {
   audienceRating?: number;
   languages?: string[];
   labels?: string[];
+  guids?: string[];
 }

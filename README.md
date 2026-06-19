@@ -30,6 +30,7 @@ Main Features:
 - Include or Exclude items based on `Labels`.
 - Users set preferences for `Genre`, `Era` and `Language` to narrow down the suggestions. Tap once to prefer, twice to exclude.
 - Flip cards over for details, Swipe left for Nope and right for Yes.
+- Optionally watch `Trailers` streamed straight from your Plex server.
 - Use your own `custom logo` on the landing page.
 - Admin panel for Settings and a `Session History` tab.
 - Choose between `Random` or `Fixed` suggestion order.
@@ -105,6 +106,12 @@ Equivalent to the `CORS_ORIGINS` environment variable, but managed at runtime wi
 - **Open in Plex Button:** Enables a button on the match winner page to open the item in Plex. Only works by opening Plex in a browser tab.
 - **Lobby QR Code:** Display a QR code in the lobby for easy session joining.
 - **Rating Display:** Choose whether detail cards show `Critic Rating`, `Audience Rating`or `both`.
+- **Trailers:** Add a `Watch Trailer` button to cards. Trailers are streamed from your Plex server. Three modes:
+  - `Off` (default): no trailer button.
+  - `On`: trailer button on detail cards
+  - `Voting only`: trailer button appears **only** on the voting cards at the end of `Timed` and `Match Target` sessions — so swiping stays fast, but everyone can watch the trailers of the matched items before casting their final vote.
+> [!TIP]
+> Missing trailers for certain items? Take a look at [MTDP](https://github.com/netplexflix/Missing-Trailer-Downloader-For-Plex) (Missing Trailer Downloader for Plex)
 - **Label Restrictions:** Include or Exclude items based on Plex labels.
 - **PWA Customization:** Customize the PWA name and icon.
 

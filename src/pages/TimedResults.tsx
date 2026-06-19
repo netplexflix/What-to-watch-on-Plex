@@ -9,6 +9,7 @@ import { RouletteWinner } from "@/components/RouletteWinner";
 import { MatchCelebration } from "@/components/MatchCelebration";
 import { PlaybackControl } from "@/components/PlaybackControl";
 import { FlippableCard } from "@/components/FlippableCard";
+import { prefetchTrailers } from "@/lib/trailerCache";
 import { sessionsApi, adminApi } from "@/lib/api";
 import { wsClient } from "@/lib/websocket";
 import { getLocalSession, clearLocalSession } from "@/lib/sessionStore";
@@ -57,8 +58,17 @@ const TimedResults = () => {
   const [localSession, setLocalSession] = useState(() => getLocalSession());
   const [enablePlexButton, setEnablePlexButton] = useState(false);
   const [ratingDisplay, setRatingDisplay] = useState<'critic' | 'audience' | 'both'>('critic');
+  // Trailers appear on the voting cards in both 'on' and 'voting' modes.
+  const [enableTrailers, setEnableTrailers] = useState(false);
   const [isMatchTargetSession, setIsMatchTargetSession] = useState(false);
   
+  // Warm trailer availability for the voting cards so the button appears without delay.
+  useEffect(() => {
+    if (!enableTrailers) return;
+    const items = matches.length > 0 ? matches : topLiked.map((t) => t.item);
+    prefetchTrailers(items.slice(0, 6).map((i) => i.ratingKey));
+  }, [enableTrailers, matches, topLiked]);
+
   const mediaMapRef = useRef<Map<string, any>>(new Map());
   const hasHandledResultRef = useRef(false);
   const matchesRef = useRef<PlexItem[]>([]);
@@ -147,6 +157,8 @@ const TimedResults = () => {
             if (settingsData.settings.rating_display) {
               setRatingDisplay(settingsData.settings.rating_display);
             }
+            const trailersMode = settingsData.settings.trailers_mode ?? (settingsData.settings.enable_trailers ? 'on' : 'off');
+            setEnableTrailers(trailersMode === 'on' || trailersMode === 'voting');
           }
         } catch (e) {
           console.error('[TimedResults] Error loading settings:', e);
@@ -571,6 +583,7 @@ const TimedResults = () => {
               onSelect={handleSelectItem}
               animationDelay={index * 0.05}
               ratingDisplay={ratingDisplay}
+              enableTrailers={enableTrailers}
             />
           ))}
         </div>

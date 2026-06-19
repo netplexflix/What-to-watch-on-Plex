@@ -346,6 +346,10 @@ export const plexApi = {
   getCacheRefreshProgress: () =>
     fetchApiGet<CacheRefreshProgress>('/plex/cache-refresh-progress'),
 
+  // Resolve an item's main trailer on demand. Returns the streamable Part key, or a 404 error when the item has no trailer.
+  getTrailerInfo: (ratingKey: string) =>
+    fetchApiGet<{ partKey: string }>(`/plex/trailer-info?ratingKey=${encodeURIComponent(ratingKey)}`),
+
   refreshCache: (libraryKeys: string[]) =>
     fetchApiAdmin<{ success: boolean; mediaCount: number; movieCount: number; showCount: number; languageCount: number; labelsCount?: number; collectionsCount?: number }>(
       '/plex/refresh-cache',

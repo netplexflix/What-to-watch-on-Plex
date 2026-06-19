@@ -349,6 +349,9 @@ router.post('/get-session-settings', (req, res) => {
           auto_cache_refresh: settings.auto_cache_refresh,
           hard_filter_preferences: settings.hard_filter_preferences,
           require_plex_member: settings.require_plex_member,
+          // 'off' | 'on' | 'voting'. enable_trailers kept for migration of old configs.
+          trailers_mode: settings.trailers_mode,
+          enable_trailers: settings.enable_trailers,
         }
       });
     } else {

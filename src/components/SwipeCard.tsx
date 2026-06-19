@@ -1,11 +1,13 @@
 // file: src/components/SwipeCard.tsx
 import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, useMotionValue, useTransform, PanInfo } from "framer-motion";
-import { X, Heart, RotateCcw, Star, Calendar, Clock, Users, ImageOff, Globe } from "lucide-react";
+import { X, Heart, RotateCcw, Star, Calendar, Clock, Users, ImageOff, Film } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { IconButton } from "@/components/ui/IconButton";
 import { useHaptics } from "@/hooks/useHaptics";
 import { isImagePrefetched, markImageLoaded } from "@/lib/imagePrefetch";
+import { TrailerModal } from "@/components/TrailerModal";
+import { getCachedTrailer, resolveTrailer } from "@/lib/trailerCache";
 import type { PlexItem } from "@/types/session";
 
 interface SwipeCardProps {
@@ -15,10 +17,16 @@ interface SwipeCardProps {
   className?: string;
   sessionMediaType?: 'movies' | 'shows' | 'both';
   ratingDisplay?: 'critic' | 'audience' | 'both';
+  enableTrailers?: boolean;
 }
 
-export const SwipeCard = ({ item, onSwipe, onUndo, className, sessionMediaType, ratingDisplay = 'critic' }: SwipeCardProps) => {
+export const SwipeCard = ({ item, onSwipe, onUndo, className, sessionMediaType, ratingDisplay = 'critic', enableTrailers = false }: SwipeCardProps) => {
   const [isFlipped, setIsFlipped] = useState(false);
+  const [showTrailer, setShowTrailer] = useState(false);
+  // Resolved trailer Part key for this item: string = available, null = none, undefined = pending.
+  const [trailerPartKey, setTrailerPartKey] = useState<string | null | undefined>(
+    () => (enableTrailers ? getCachedTrailer(item.ratingKey) : null)
+  );
   const [exitDirection, setExitDirection] = useState<"left" | "right" | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [imageLoaded, setImageLoaded] = useState(() => isImagePrefetched(item.thumb));
@@ -39,12 +47,32 @@ export const SwipeCard = ({ item, onSwipe, onUndo, className, sessionMediaType, 
     if (cardKey.current !== item.ratingKey) {
       cardKey.current = item.ratingKey;
       setIsFlipped(false);
+      setShowTrailer(false);
       setExitDirection(null);
       setImageLoaded(isImagePrefetched(item.thumb));
       setImageError(false);
       x.set(0);
     }
   }, [item.ratingKey, item.thumb, x]);
+
+  // Resolve whether this item has a playable trailer (cached/prefetched when possible).
+  useEffect(() => {
+    if (!enableTrailers) {
+      setTrailerPartKey(null);
+      return;
+    }
+    const cached = getCachedTrailer(item.ratingKey);
+    if (cached !== undefined) {
+      setTrailerPartKey(cached);
+      return;
+    }
+    setTrailerPartKey(undefined);
+    let active = true;
+    resolveTrailer(item.ratingKey).then((partKey) => {
+      if (active) setTrailerPartKey(partKey);
+    });
+    return () => { active = false; };
+  }, [enableTrailers, item.ratingKey]);
 
   // Preload image
   useEffect(() => {
@@ -109,6 +137,15 @@ export const SwipeCard = ({ item, onSwipe, onUndo, className, sessionMediaType, 
     }
   }, [isDragging, haptics]);
 
+  const handleTrailerClick = useCallback((e: React.MouseEvent) => {
+    // Stop propagation so opening the trailer never flips the card or starts a swipe.
+    e.stopPropagation();
+    haptics.selection();
+    setShowTrailer(true);
+  }, [haptics]);
+
+  const showTrailerButton = enableTrailers && typeof trailerPartKey === "string";
+
   const formatDuration = (ms: number) => {
     if (!ms || ms === 0) return "N/A";
     const hours = Math.floor(ms / 3600000);
@@ -128,7 +165,7 @@ export const SwipeCard = ({ item, onSwipe, onUndo, className, sessionMediaType, 
     if (showCritic && item.rating) {
       ratings.push(
         <div key="critic" className="flex items-center gap-2 text-accent">
-          <Star size={14} fill="currentColor" />
+          <Star size={14} className="shrink-0" fill="currentColor" />
           <span>{item.rating.toFixed(1)}</span>
           {ratingDisplay === 'both' && <span className="text-xs text-muted-foreground">(Critic)</span>}
         </div>
@@ -138,7 +175,7 @@ export const SwipeCard = ({ item, onSwipe, onUndo, className, sessionMediaType, 
     if (showAudience && item.audienceRating) {
       ratings.push(
         <div key="audience" className="flex items-center gap-2 text-primary">
-          <Star size={14} fill="currentColor" />
+          <Star size={14} className="shrink-0" fill="currentColor" />
           <span>{item.audienceRating.toFixed(1)}</span>
           {ratingDisplay === 'both' && <span className="text-xs text-muted-foreground">(Audience)</span>}
         </div>
@@ -150,14 +187,14 @@ export const SwipeCard = ({ item, onSwipe, onUndo, className, sessionMediaType, 
       if (item.rating) {
         ratings.push(
           <div key="fallback-critic" className="flex items-center gap-2 text-accent">
-            <Star size={14} fill="currentColor" />
+            <Star size={14} className="shrink-0" fill="currentColor" />
             <span>{item.rating.toFixed(1)}</span>
           </div>
         );
       } else if (item.audienceRating) {
         ratings.push(
           <div key="fallback-audience" className="flex items-center gap-2 text-primary">
-            <Star size={14} fill="currentColor" />
+            <Star size={14} className="shrink-0" fill="currentColor" />
             <span>{item.audienceRating.toFixed(1)}</span>
           </div>
         );
@@ -275,10 +312,10 @@ export const SwipeCard = ({ item, onSwipe, onUndo, className, sessionMediaType, 
               className="absolute inset-0 rounded-2xl overflow-hidden shadow-2xl bg-card [transform:rotateY(180deg)]"
               style={{ backfaceVisibility: "hidden" }}
             >
-              <div className="h-full overflow-y-auto p-5 space-y-3 scrollbar-thin">
+              <div className="h-full overflow-y-auto px-5 pt-3 pb-4 space-y-3 scrollbar-thin">
                 <div>
                   <h3 className="text-xl font-bold text-foreground">{item.title}</h3>
-                  <div className="flex flex-wrap gap-2 mt-2">
+                  <div className="flex flex-wrap gap-2 mt-1.5">
                     {item.genres.slice(0, 3).map((genre) => (
                       <span
                         key={genre}
@@ -290,22 +327,24 @@ export const SwipeCard = ({ item, onSwipe, onUndo, className, sessionMediaType, 
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-3 text-sm">
-                  <div className="flex items-center gap-2 text-muted-foreground">
-                    <Calendar size={14} />
-                    <span>{item.year}</span>
-                  </div>
-                  <div className="flex items-center gap-2 text-muted-foreground">
-                    <Clock size={14} />
-                    <span>{formatDuration(item.duration)}</span>
-                  </div>
-                  {renderRating()}
-                  {item.contentRating && (
-                    <div className="flex items-center gap-2 text-muted-foreground">
-                      <Users size={14} />
-                      <span>{item.contentRating}</span>
+                <div className="space-y-2 text-sm">
+                  <div className="grid grid-cols-3 text-muted-foreground">
+                    <div className="flex items-center gap-1.5">
+                      <Calendar size={14} />
+                      <span>{item.year}</span>
                     </div>
-                  )}
+                    <div className="flex items-center gap-1.5 whitespace-nowrap">
+                      <Clock size={14} className="shrink-0" />
+                      <span>{formatDuration(item.duration)}</span>
+                    </div>
+                    {item.contentRating && (
+                      <div className="flex items-center justify-end gap-1.5">
+                        <Users size={14} />
+                        <span>{item.contentRating}</span>
+                      </div>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-3">{renderRating()}</div>
                 </div>
 
                 <div>
@@ -317,37 +356,40 @@ export const SwipeCard = ({ item, onSwipe, onUndo, className, sessionMediaType, 
                   </p>
                 </div>
 
+                {item.languages && item.languages.length > 0 && (
+                  <div className="flex gap-2 text-sm">
+                    <span className="w-16 text-xs text-muted-foreground uppercase tracking-wide shrink-0 pt-0.5">Language</span>
+                    <span className="text-foreground">{item.languages.join(", ")}</span>
+                  </div>
+                )}
+
                 {item.directors && item.directors.length > 0 && (
-                  <div>
-                    <p className="text-xs text-muted-foreground uppercase tracking-wide mb-1">
-                      Director
-                    </p>
-                    <p className="text-sm text-foreground">{item.directors.join(", ")}</p>
+                  <div className="flex gap-2 text-sm">
+                    <span className="w-16 text-xs text-muted-foreground uppercase tracking-wide shrink-0 pt-0.5">Director</span>
+                    <span className="text-foreground">{item.directors.join(", ")}</span>
                   </div>
                 )}
 
                 {item.actors && item.actors.length > 0 && (
-                  <div>
-                    <p className="text-xs text-muted-foreground uppercase tracking-wide mb-1">
-                      Cast
-                    </p>
-                    <p className="text-sm text-foreground">{item.actors.slice(0, 4).join(", ")}</p>
+                  <div className="flex gap-2 text-sm">
+                    <span className="w-16 text-xs text-muted-foreground uppercase tracking-wide shrink-0 pt-0.5">Cast</span>
+                    <span className="text-foreground">{item.actors.slice(0, 4).join(", ")}</span>
                   </div>
                 )}
 
-                {item.languages && item.languages.length > 0 && (
-                  <div>
-                    <p className="text-xs text-muted-foreground uppercase tracking-wide mb-1">
-                      Language
-                    </p>
-                    <div className="flex items-center gap-2">
-                      <Globe size={14} className="text-muted-foreground" />
-                      <p className="text-sm text-foreground">{item.languages.join(", ")}</p>
-                    </div>
-                  </div>
+                {showTrailerButton && (
+                  <button
+                    type="button"
+                    onClick={handleTrailerClick}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium bg-secondary rounded-lg text-secondary-foreground hover:bg-secondary/80 transition-colors"
+                  >
+                    <Film size={16} />
+                    Watch Trailer
+                  </button>
                 )}
 
-                <p className="text-xs text-center text-muted-foreground pt-2">
+                <p className="text-xs text-center text-muted-foreground pt-1">
                   Tap to flip back
                 </p>
               </div>
@@ -387,6 +429,15 @@ export const SwipeCard = ({ item, onSwipe, onUndo, className, sessionMediaType, 
           <Heart size={28} />
         </IconButton>
       </div>
+
+      {showTrailerButton && trailerPartKey && (
+        <TrailerModal
+          partKey={trailerPartKey}
+          title={item.title}
+          open={showTrailer}
+          onOpenChange={setShowTrailer}
+        />
+      )}
     </div>
   );
 };
