@@ -1,7 +1,7 @@
 // File: src/components/admin/AdminSettingsTab.tsx
 import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
-import { Loader2, Save, Shuffle, ListOrdered, Hash, Upload, Trash2, Image, ExternalLink, Tag, X, Plus, Star, QrCode, Smartphone, Type, AlertTriangle, Filter, ShieldCheck } from "lucide-react";
+import { Loader2, Save, Shuffle, ListOrdered, Hash, Upload, Trash2, Image, ExternalLink, Tag, X, Plus, Star, QrCode, Smartphone, Type, AlertTriangle, Filter, ShieldCheck, Film } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -23,6 +23,7 @@ interface SessionSettings {
   enable_lobby_qr: boolean;
   hard_filter_preferences: boolean;
   require_plex_member: boolean;
+  trailers_mode: "off" | "on" | "voting";
 }
 
 const DEFAULT_SETTINGS: SessionSettings = {
@@ -38,6 +39,7 @@ const DEFAULT_SETTINGS: SessionSettings = {
   enable_lobby_qr: false,
   hard_filter_preferences: true,
   require_plex_member: false,
+  trailers_mode: "off",
 };
 
 interface PwaSettings {
@@ -107,6 +109,8 @@ export const AdminSettingsTab = () => {
           enable_lobby_qr: data.settings.enable_lobby_qr ?? false,
           hard_filter_preferences: data.settings.hard_filter_preferences ?? true,
           require_plex_member: data.settings.require_plex_member ?? false,
+          // Migrate the old boolean enable_trailers -> trailers_mode when needed.
+          trailers_mode: data.settings.trailers_mode ?? (data.settings.enable_trailers ? "on" : "off"),
         });
       }
     } catch (err) {
@@ -673,6 +677,48 @@ export const AdminSettingsTab = () => {
               setSettings(s => ({ ...s, enable_plex_button: checked }));
             }}
           />
+        </div>
+      </motion.div>
+
+      {/* Trailers */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.4 }}
+        className="glass-card rounded-xl p-4 space-y-4"
+      >
+        <div className="flex items-center gap-2">
+          <Film size={20} className="text-primary" />
+          <h2 className="font-semibold text-foreground">Trailers</h2>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          Show a "Watch Trailer" button on cards, streamed from your Plex server. Only
+          items that have a trailer in Plex show the button.
+        </p>
+
+        <div className="grid grid-cols-3 gap-2">
+          {([
+            { value: "off", label: "Off", hint: "No trailers" },
+            { value: "on", label: "On", hint: "All cards" },
+            { value: "voting", label: "Voting only", hint: "Timed/Target vote" },
+          ] as const).map((opt) => (
+            <button
+              key={opt.value}
+              onClick={() => {
+                haptics.selection();
+                setSettings(s => ({ ...s, trailers_mode: opt.value }));
+              }}
+              className={cn(
+                "p-3 rounded-lg transition-all duration-200 flex flex-col items-center gap-1",
+                settings.trailers_mode === opt.value
+                  ? "bg-primary/20 border-2 border-primary"
+                  : "bg-secondary hover:bg-secondary/80 border-2 border-transparent"
+              )}
+            >
+              <span className="font-medium text-foreground text-sm">{opt.label}</span>
+              <span className="text-xs text-muted-foreground text-center">{opt.hint}</span>
+            </button>
+          ))}
         </div>
       </motion.div>
 

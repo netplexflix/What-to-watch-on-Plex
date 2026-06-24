@@ -1,9 +1,11 @@
 // File: src/components/FlippableCard.tsx
 import { useState, useEffect, useRef, useCallback } from "react";
 import { motion } from "framer-motion";
-import { Check, Star, Calendar, Clock, Users, ImageOff, Globe } from "lucide-react";
+import { Check, Star, Calendar, Clock, Users, ImageOff, Film } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useHaptics } from "@/hooks/useHaptics";
+import { TrailerModal } from "@/components/TrailerModal";
+import { getCachedTrailer, resolveTrailer } from "@/lib/trailerCache";
 import type { PlexItem } from "@/types/session";
 
 interface FlippableCardProps {
@@ -14,6 +16,7 @@ interface FlippableCardProps {
   showSelectedIndicator?: boolean;
   animationDelay?: number;
   ratingDisplay?: 'critic' | 'audience' | 'both';
+  enableTrailers?: boolean;
   className?: string;
 }
 
@@ -25,11 +28,17 @@ export const FlippableCard = ({
   showSelectedIndicator = true,
   animationDelay = 0,
   ratingDisplay = 'critic',
+  enableTrailers = false,
   className,
 }: FlippableCardProps) => {
   const [isFlipped, setIsFlipped] = useState(false);
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
+  const [showTrailer, setShowTrailer] = useState(false);
+  // Resolved trailer Part key: string = available, null = none, undefined = pending.
+  const [trailerPartKey, setTrailerPartKey] = useState<string | null | undefined>(
+    () => (enableTrailers ? getCachedTrailer(item.ratingKey) : null)
+  );
   const haptics = useHaptics();
   
   // Double tap detection
@@ -42,7 +51,27 @@ export const FlippableCard = ({
     setIsFlipped(false);
     setImageLoaded(false);
     setImageError(false);
+    setShowTrailer(false);
   }, [item.ratingKey]);
+
+  // Resolve whether this item has a playable trailer (cached/prefetched when possible).
+  useEffect(() => {
+    if (!enableTrailers) {
+      setTrailerPartKey(null);
+      return;
+    }
+    const cached = getCachedTrailer(item.ratingKey);
+    if (cached !== undefined) {
+      setTrailerPartKey(cached);
+      return;
+    }
+    setTrailerPartKey(undefined);
+    let active = true;
+    resolveTrailer(item.ratingKey).then((partKey) => {
+      if (active) setTrailerPartKey(partKey);
+    });
+    return () => { active = false; };
+  }, [enableTrailers, item.ratingKey]);
 
   // Preload image
   useEffect(() => {
@@ -115,6 +144,16 @@ export const FlippableCard = ({
     }
   }, [isDisabled, onSelect, item.ratingKey, haptics]);
 
+  const handleTrailerClick = useCallback((e: React.MouseEvent) => {
+    // Stop propagation so opening the trailer never selects or flips the card.
+    e.preventDefault();
+    e.stopPropagation();
+    haptics.selection();
+    setShowTrailer(true);
+  }, [haptics]);
+
+  const showTrailerButton = enableTrailers && typeof trailerPartKey === "string";
+
   const formatDuration = (ms: number) => {
     if (!ms || ms === 0) return "N/A";
     const hours = Math.floor(ms / 3600000);
@@ -134,7 +173,7 @@ export const FlippableCard = ({
     if (showCritic && item.rating) {
       ratings.push(
         <div key="critic" className="flex items-center gap-1 text-accent">
-          <Star size={12} fill="currentColor" />
+          <Star size={12} className="shrink-0" fill="currentColor" />
           <span className="text-xs">{item.rating.toFixed(1)}</span>
           {ratingDisplay === 'both' && <span className="text-[10px] text-muted-foreground">(C)</span>}
         </div>
@@ -144,7 +183,7 @@ export const FlippableCard = ({
     if (showAudience && item.audienceRating) {
       ratings.push(
         <div key="audience" className="flex items-center gap-1 text-primary">
-          <Star size={12} fill="currentColor" />
+          <Star size={12} className="shrink-0" fill="currentColor" />
           <span className="text-xs">{item.audienceRating.toFixed(1)}</span>
           {ratingDisplay === 'both' && <span className="text-[10px] text-muted-foreground">(A)</span>}
         </div>
@@ -156,14 +195,14 @@ export const FlippableCard = ({
       if (item.rating) {
         ratings.push(
           <div key="fallback-critic" className="flex items-center gap-1 text-accent">
-            <Star size={12} fill="currentColor" />
+            <Star size={12} className="shrink-0" fill="currentColor" />
             <span className="text-xs">{item.rating.toFixed(1)}</span>
           </div>
         );
       } else if (item.audienceRating) {
         ratings.push(
           <div key="fallback-audience" className="flex items-center gap-1 text-primary">
-            <Star size={12} fill="currentColor" />
+            <Star size={12} className="shrink-0" fill="currentColor" />
             <span className="text-xs">{item.audienceRating.toFixed(1)}</span>
           </div>
         );
@@ -257,7 +296,7 @@ export const FlippableCard = ({
           className="absolute inset-0 rounded-xl overflow-hidden bg-card [transform:rotateY(180deg)]"
           style={{ backfaceVisibility: "hidden" }}
         >
-          <div className="h-full overflow-y-auto p-3 space-y-2 scrollbar-thin">
+          <div className="h-full overflow-y-auto px-3 pt-2 pb-3 space-y-2 scrollbar-thin">
             <div>
               <h3 className="text-sm font-bold text-foreground leading-tight">{item.title}</h3>
               <div className="flex flex-wrap gap-1 mt-1">
@@ -272,56 +311,66 @@ export const FlippableCard = ({
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-1.5 text-xs">
-              <div className="flex items-center gap-1 text-muted-foreground">
-                <Calendar size={10} />
-                <span>{item.year}</span>
-              </div>
-              <div className="flex items-center gap-1 text-muted-foreground">
-                <Clock size={10} />
-                <span>{formatDuration(item.duration)}</span>
-              </div>
-              {renderRating()}
-              {item.contentRating && (
-                <div className="flex items-center gap-1 text-muted-foreground">
-                  <Users size={10} />
-                  <span>{item.contentRating}</span>
+            <div className="space-y-1 text-xs">
+              <div className="grid grid-cols-3 text-muted-foreground">
+                <div className="flex items-center gap-1">
+                  <Calendar size={10} />
+                  <span>{item.year}</span>
                 </div>
-              )}
+                <div className="flex items-center gap-1 whitespace-nowrap">
+                  <Clock size={10} className="shrink-0" />
+                  <span>{formatDuration(item.duration)}</span>
+                </div>
+                {item.contentRating && (
+                  <div className="flex items-center justify-end gap-1">
+                    <Users size={10} />
+                    <span>{item.contentRating}</span>
+                  </div>
+                )}
+              </div>
+              <div className="flex items-center justify-between">{renderRating()}</div>
             </div>
 
             <div>
               <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-0.5">
                 Summary
               </p>
-              <p className="text-[11px] text-muted-foreground leading-relaxed line-clamp-4">
+              <p className="text-[11px] text-muted-foreground leading-relaxed">
                 {item.summary || "No summary available."}
               </p>
             </div>
 
+            {item.languages && item.languages.length > 0 && (
+              <div className="flex gap-1.5">
+                <span className="w-14 text-[10px] text-muted-foreground uppercase tracking-wide shrink-0 pt-0.5">Language</span>
+                <span className="text-[11px] text-foreground">{item.languages.slice(0, 2).join(", ")}</span>
+              </div>
+            )}
+
             {item.directors && item.directors.length > 0 && (
-              <div>
-                <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-0.5">
-                  Director
-                </p>
-                <p className="text-[11px] text-foreground">{item.directors.slice(0, 2).join(", ")}</p>
+              <div className="flex gap-1.5">
+                <span className="w-14 text-[10px] text-muted-foreground uppercase tracking-wide shrink-0 pt-0.5">Director</span>
+                <span className="text-[11px] text-foreground">{item.directors.slice(0, 2).join(", ")}</span>
               </div>
             )}
 
             {item.actors && item.actors.length > 0 && (
-              <div>
-                <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-0.5">
-                  Cast
-                </p>
-                <p className="text-[11px] text-foreground">{item.actors.slice(0, 3).join(", ")}</p>
+              <div className="flex gap-1.5">
+                <span className="w-14 text-[10px] text-muted-foreground uppercase tracking-wide shrink-0 pt-0.5">Cast</span>
+                <span className="text-[11px] text-foreground">{item.actors.slice(0, 3).join(", ")}</span>
               </div>
             )}
 
-            {item.languages && item.languages.length > 0 && (
-              <div className="flex items-center gap-1">
-                <Globe size={10} className="text-muted-foreground" />
-                <p className="text-[11px] text-foreground">{item.languages.slice(0, 2).join(", ")}</p>
-              </div>
+            {showTrailerButton && (
+              <button
+                type="button"
+                onClick={handleTrailerClick}
+                onPointerDown={(e) => e.stopPropagation()}
+                className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium bg-secondary rounded-lg text-secondary-foreground hover:bg-secondary/80 transition-colors"
+              >
+                <Film size={12} />
+                Watch Trailer
+              </button>
             )}
 
             <p className="text-[9px] text-center text-muted-foreground pt-1">
@@ -331,7 +380,7 @@ export const FlippableCard = ({
           
           {/* Selected indicator on back too */}
           {showSelectedIndicator && isSelected && (
-            <motion.div 
+            <motion.div
               initial={{ scale: 0 }}
               animate={{ scale: 1 }}
               className="absolute top-2 right-2 w-6 h-6 bg-primary rounded-full flex items-center justify-center"
@@ -341,6 +390,15 @@ export const FlippableCard = ({
           )}
         </div>
       </div>
+
+      {showTrailerButton && trailerPartKey && (
+        <TrailerModal
+          partKey={trailerPartKey}
+          title={item.title}
+          open={showTrailer}
+          onOpenChange={setShowTrailer}
+        />
+      )}
     </motion.div>
   );
 };

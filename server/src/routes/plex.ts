@@ -1,6 +1,8 @@
 // File: server/src/routes/plex.ts
 import { Router } from 'express';
 import crypto from 'crypto';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { getDb, generateId } from '../db.js';
 import { requireAdmin } from '../middleware/auth.js';
 import { decryptToken } from '../services/encryption.js';
@@ -2087,6 +2089,132 @@ router.get('/image', async (req, res) => {
   }
 });
 
+// Proxy/stream Plex trailers (video).
+router.get('/trailer', async (req, res) => {
+  try {
+    const rawPath = req.query.path as string;
+    if (!rawPath) {
+      return res.status(400).json({ error: 'Missing path parameter' });
+    }
+
+    // Decode percent-encoding BEFORE validation to prevent bypass via %2e%2e etc.
+    let mediaPath: string;
+    try {
+      mediaPath = decodeURIComponent(rawPath);
+    } catch {
+      return res.status(400).json({ error: 'Invalid trailer path encoding' });
+    }
+
+    // Only allow Plex media paths that can carry a trailer Part
+    const isSafePath =
+      mediaPath.startsWith('/') &&
+      !mediaPath.includes('..') &&
+      !mediaPath.toLowerCase().includes('http') &&
+      /^[a-zA-Z0-9/\-_.+@:,=&?]+$/.test(mediaPath) &&
+      STREAMABLE_TRAILER_PREFIXES.some(prefix => mediaPath.startsWith(prefix));
+
+    if (!isSafePath) {
+      return res.status(400).json({ error: 'Invalid trailer path' });
+    }
+
+    const config = getPlexConfig();
+    if (!config?.plex_url || !config?.plex_token) {
+      return res.status(400).json({ error: 'Plex not configured' });
+    }
+
+    const separator = mediaPath.includes('?') ? '&' : '?';
+    const fullUrl = `${config.plex_url}${mediaPath}${separator}X-Plex-Token=${config.plex_token}`;
+    const controller = new AbortController();
+    res.on('close', () => controller.abort());
+
+    const upstreamHeaders: Record<string, string> = { Accept: 'video/*' };
+    if (req.headers.range) {
+      upstreamHeaders.Range = req.headers.range as string;
+    }
+
+    const response = await fetch(fullUrl, {
+      headers: upstreamHeaders,
+      signal: controller.signal,
+    });
+
+    if (!response.ok || !response.body) {
+      return res
+        .status(response.status || 502)
+        .json({ error: `Failed to fetch trailer: ${response.status}` });
+    }
+
+    // Mirror status (200 full / 206 partial) and forward range-related headers.
+    res.status(response.status);
+    res.set('Accept-Ranges', 'bytes');
+    const passthroughHeaders = ['content-type', 'content-length', 'content-range'];
+    for (const header of passthroughHeaders) {
+      const value = response.headers.get(header);
+      if (value) res.set(header, value);
+    }
+    if (!response.headers.get('content-type')) {
+      res.set('Content-Type', 'video/mp4');
+    }
+
+    try {
+      // pipeline cleans up both streams and rejects when the client seeks/closes mid-stream.
+      await pipeline(Readable.fromWeb(response.body as any), res);
+    } catch (err: any) {
+      // Aborts / premature closes are expected when the user seeks or closes the player.
+      if (err?.name !== 'AbortError' && err?.code !== 'ERR_STREAM_PREMATURE_CLOSE') {
+        console.error('Trailer stream error:', err);
+      }
+    }
+  } catch (error: any) {
+    if (error?.name === 'AbortError') return; // client disconnected, nothing to do
+    console.error('Error proxying trailer:', error);
+    if (!res.headersSent) res.status(500).json({ error: 'Failed to proxy trailer' });
+  }
+});
+
+// Resolve an item's main trailer on demand
+const trailerInfoCache = new Map<string, { partKey: string | null; ts: number }>();
+const TRAILER_INFO_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+router.get('/trailer-info', async (req, res) => {
+  try {
+    const ratingKey = String(req.query.ratingKey || '');
+    if (!/^\d+$/.test(ratingKey)) {
+      return res.status(400).json({ error: 'Invalid ratingKey' });
+    }
+
+    const cached = trailerInfoCache.get(ratingKey);
+    if (cached && Date.now() - cached.ts < TRAILER_INFO_TTL_MS) {
+      if (!cached.partKey) return res.status(404).json({ error: 'No trailer' });
+      return res.json({ partKey: cached.partKey });
+    }
+
+    const config = getPlexConfig();
+    if (!config?.plex_url || !config?.plex_token) {
+      return res.status(400).json({ error: 'Plex not configured' });
+    }
+
+    const response = await fetch(
+      `${config.plex_url}/library/metadata/${ratingKey}?X-Plex-Token=${config.plex_token}&includeExtras=1`,
+      { headers: { Accept: 'application/json' } }
+    );
+    if (!response.ok) {
+      return res.status(502).json({ error: `Failed to fetch metadata: ${response.status}` });
+    }
+
+    const data = await response.json();
+    const item = data.MediaContainer?.Metadata?.[0];
+    const trailer = item ? extractTrailer(item) : undefined;
+
+    trailerInfoCache.set(ratingKey, { partKey: trailer?.partKey ?? null, ts: Date.now() });
+
+    if (!trailer) return res.status(404).json({ error: 'No trailer' });
+    res.json({ partKey: trailer.partKey });
+  } catch (error) {
+    console.error('Error resolving trailer info:', error);
+    res.status(500).json({ error: 'Failed to resolve trailer' });
+  }
+});
+
 // ============ HELPER FUNCTIONS ============
 
 // Fetch media items with proper language detection and progress tracking
@@ -2270,6 +2398,34 @@ async function fetchMediaItemsWithLanguagesAndProgress(
   };
 }
 
+// Plex Part.key prefixes we can stream through the admin-token proxy:
+//   /library/parts/  -> local trailer files on the server
+//   /services/iva/   -> Plex's online (Plex Pass / IVA) trailers, served as range-able MP4
+const STREAMABLE_TRAILER_PREFIXES = ['/library/parts/', '/services/iva/'];
+
+function isStreamableTrailerKey(key: unknown): key is string {
+  return typeof key === 'string' && STREAMABLE_TRAILER_PREFIXES.some(p => key.startsWith(p));
+}
+
+// Extract the "main" playable trailer from a Plex item's Extras
+function extractTrailer(detailedItem: any): { ratingKey: string; partKey: string } | undefined {
+  const extras = detailedItem?.Extras?.Metadata;
+  if (!Array.isArray(extras) || extras.length === 0) return undefined;
+
+  const trailers = extras.filter((e: any) => e?.subtype === 'trailer');
+  const candidates = (trailers.length > 0 ? trailers : extras)
+    .map((extra: any) => ({ extra, partKey: extra?.Media?.[0]?.Part?.[0]?.key }))
+    .filter((c: any) => isStreamableTrailerKey(c.partKey));
+
+  if (candidates.length === 0) return undefined;
+
+  // Prefer a local file trailer if one is available, else the first online trailer.
+  const chosen =
+    candidates.find((c: any) => c.partKey.startsWith('/library/parts/')) ?? candidates[0];
+
+  return { ratingKey: String(chosen.extra.ratingKey ?? ''), partKey: chosen.partKey };
+}
+
 // Helper to create a standardized media item object
 // Uses the detailed metadata item as the primary source for all fields
 function createMediaItem(detailedItem: any, libraryType: string, languages: string[], labels: string[]): any {
@@ -2299,7 +2455,7 @@ function createMediaItem(detailedItem: any, libraryType: string, languages: stri
   if (detailedItem.guid) {
     guids.push(detailedItem.guid);
   }
-  
+
   return {
     ratingKey: detailedItem.ratingKey,
     title: detailedItem.title,
