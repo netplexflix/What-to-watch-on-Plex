@@ -15,6 +15,9 @@ const formatDate = (dateString: string): string => {
   });
 };
 
+const formatVersion = (version: string): string =>
+  version.startsWith('v') ? version : `v${version}`;
+
 export const VersionInfo = () => {
   const [versionInfo, setVersionInfo] = useState<VersionInfoType | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -57,6 +60,8 @@ export const VersionInfo = () => {
     );
   }
 
+  const isDevelopBuild = !versionInfo?.updateAvailable && !!versionInfo?.isDevelopBuild;
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -80,13 +85,21 @@ export const VersionInfo = () => {
       </div>
 
       <div className="space-y-3">
-        {/* Current Version */}
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-muted-foreground">Current Version</span>
-          <span className="font-mono text-sm text-foreground">
-            {versionInfo?.currentVersion || 'Unknown'}
-          </span>
-        </div>
+        {isDevelopBuild && versionInfo?.latestVersion ? (
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-muted-foreground">Latest release</span>
+            <span className="font-mono text-sm text-foreground">
+              {formatVersion(versionInfo.latestVersion)}
+            </span>
+          </div>
+        ) : !isDevelopBuild ? (
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-muted-foreground">Current Version</span>
+            <span className="font-mono text-sm text-foreground">
+              {versionInfo?.currentVersion || 'Unknown'}
+            </span>
+          </div>
+        ) : null}
 
         {/* Update Status */}
         {versionInfo?.updateAvailable ? (
@@ -137,20 +150,18 @@ export const VersionInfo = () => {
               </a>
             )}
           </div>
-        ) : versionInfo?.isDevelopBuild ? (
+        ) : isDevelopBuild ? (
           <div className="p-3 rounded-lg bg-primary/10 border border-primary/20 space-y-2">
             <div className="flex items-center gap-2">
               <GitBranch size={18} className="text-primary" />
               <span className="font-medium text-foreground">Develop build</span>
             </div>
-            {versionInfo.latestVersion && (
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">Latest release</span>
-                <span className="font-mono text-primary">
-                  {versionInfo.latestVersion.startsWith('v') ? versionInfo.latestVersion : `v${versionInfo.latestVersion}`}
-                </span>
-              </div>
-            )}
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-muted-foreground">Current Version</span>
+              <span className="font-mono text-primary">
+                {versionInfo?.currentVersion ? formatVersion(versionInfo.currentVersion) : 'Unknown'}
+              </span>
+            </div>
           </div>
         ) : versionInfo?.latestVersion ? (
           <div className="p-3 rounded-lg bg-accent/10 border border-accent/20">
