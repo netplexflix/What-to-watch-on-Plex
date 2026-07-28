@@ -20,27 +20,5 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
-    <script>
-      // Register service worker for PWA (only in production)
-      if ('serviceWorker' in navigator && window.location.hostname !== 'localhost') {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js')
-            .then((registration) => {
-              console.log('SW registered:', registration.scope);
-            })
-            .catch((error) => {
-              console.log('SW registration failed:', error);
-            });
-        });
-      } else if ('serviceWorker' in navigator && window.location.hostname === 'localhost') {
-        // Unregister any existing service workers in development
-        navigator.serviceWorker.getRegistrations().then((registrations) => {
-          for (const registration of registrations) {
-            registration.unregister();
-            console.log('SW unregistered for development');
-          }
-        });
-      }
-    </script>
   </body>
 </html>
