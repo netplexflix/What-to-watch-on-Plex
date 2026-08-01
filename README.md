@@ -117,6 +117,32 @@ Equivalent to the `CORS_ORIGINS` environment variable, but managed at runtime wi
 
 ---
 
+## 🤝 Swiparr
+WTWP was inspired by [This post/Tweet](https://www.reddit.com/r/PleX/comments/ir9pi5/someone_should_totally_make_this_for_plex/).<br> Before starting development, I searched for existing options and came across [Swiparr](https://github.com/m3sserstudi0s/swiparr) which already existed. <br> Swiparr at that point however did not support Plex so WTWP was created. 
+The current version of Swiparr meanwhile *does* support Plex as well, but not all features are available in both apps. Here are the most important differences listed, so you can decide which is right for you:
+
+| (Optional) Feature | WTWP | Swiparr |
+|---|:---:|:---:|
+| Multi-media-server support | ❌<br><sub>(Plex only)</sub> | ✅<br><sub>(Jellyfin/Emby/Plex/TMDB)</sub> |
+| TV show support | ✅ | ❌ |
+| Timed mode / Match-Target session modes + tie-breaker | ✅ | ❌ |
+| Trailer playback | ✅ | ❌ |
+| Plex oAuth login guard | ✅ | ❌ |
+| User Watched-items auto-exclusion | ✅ | ❌ |
+| Group preference questionnaire filters (genre/era/language) | ✅ | ❌ |
+| Plex Label filters | ✅ | ❌ |
+| Streaming-availability ("where to watch") filter | ❌ | ✅ |
+| Runtime & minimum-rating filters | ❌ | ✅ |
+| Sort by Trending / Popular | ❌ | ✅ |
+| Customizable (logo + PWA name and icon) | ✅ | ❌ |
+| Suggest from Watchlist and/or Collections | ✅ | ❌ |
+| Suggest items not owned in library | ❌ | ✅ |
+| Serverless deployment | ❌<br><sub>(self hosted only)</sub> | ✅<br><sub>(swiparr.com)</sub> |
+
+<sub>Feature sets evolve on both sides — please open an issue if anything here is out of date.</sub>
+
+---
+
 ## 🩺 Troubleshooting Common Issues:
 
 ### ❌ Clients keep waiting on other users/other users are stuck on previous screen:
