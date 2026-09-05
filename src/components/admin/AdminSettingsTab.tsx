@@ -1,7 +1,7 @@
 // File: src/components/admin/AdminSettingsTab.tsx
 import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
-import { Loader2, Save, Shuffle, ListOrdered, Hash, Upload, Trash2, Image, ExternalLink, Tag, X, Plus, Star, QrCode, Smartphone, Type, AlertTriangle, Filter, ShieldCheck, Film, Lock } from "lucide-react";
+import { Loader2, Save, Shuffle, ListOrdered, Hash, Upload, Trash2, Image, ExternalLink, Tag, X, Plus, Star, QrCode, Smartphone, Type, AlertTriangle, Filter, EyeOff, ShieldCheck, Film, Lock, ListChecks } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -9,29 +9,37 @@ import { adminApi } from "@/lib/api";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useHaptics } from "@/hooks/useHaptics";
+import { QUESTION_STAGES, isStageEnabled, type QuestionStageId } from "@/lib/questionStages";
+import { DEFAULT_SESSION_SETTINGS, type SessionSettings } from "@/types/settings";
+import { deepEqual } from "@/lib/deepEqual";
+import { useUnsavedChanges } from "@/hooks/useUnsavedChanges";
 
 // Only the subset of session settings this tab owns — other fields (e.g. the Connection
 // tab's auto_cache_refresh) are deliberately absent. /save-session-settings merges
 // partial saves server-side, so posting this object never deletes those other fields.
-interface SessionSettings {
-  suggestion_order: "random" | "fixed";
-  max_choices: number;
-  max_exclusions: number;
-  enable_collections: boolean;
-  enable_plex_button: boolean;
-  enable_label_restrictions: boolean;
-  label_restriction_mode: "include" | "exclude";
-  restricted_labels: string[];
-  rating_display: "critic" | "audience" | "both";
-  enable_lobby_qr: boolean;
-  hard_filter_preferences: boolean;
-  require_plex_member: boolean;
-  restrict_create_plex: boolean;
-  restrict_create_password: boolean;
-  trailers_mode: "off" | "on" | "voting";
-}
+// Keep this a Pick<> rather than the full SessionSettings for exactly that reason.
+type OwnedSettings = Pick<
+  SessionSettings,
+  | "suggestion_order"
+  | "max_choices"
+  | "max_exclusions"
+  | "enable_collections"
+  | "enable_plex_button"
+  | "enable_label_restrictions"
+  | "label_restriction_mode"
+  | "restricted_labels"
+  | "rating_display"
+  | "enable_lobby_qr"
+  | "hard_filter_preferences"
+  | "filter_watched_items"
+  | "require_plex_member"
+  | "restrict_create_plex"
+  | "restrict_create_password"
+  | "trailers_mode"
+  | "question_stages"
+>;
 
-const DEFAULT_SETTINGS: SessionSettings = {
+const DEFAULT_SETTINGS: OwnedSettings = {
   suggestion_order: "random",
   max_choices: 3,
   max_exclusions: 3,
@@ -43,10 +51,12 @@ const DEFAULT_SETTINGS: SessionSettings = {
   rating_display: "critic",
   enable_lobby_qr: false,
   hard_filter_preferences: true,
+  filter_watched_items: true,
   require_plex_member: false,
   restrict_create_plex: false,
   restrict_create_password: false,
   trailers_mode: "off",
+  question_stages: DEFAULT_SESSION_SETTINGS.question_stages,
 };
 
 interface PwaSettings {
@@ -54,6 +64,10 @@ interface PwaSettings {
   appShortName: string;
   hasCustomIcon: boolean;
 }
+
+// The part of PwaSettings the "Save PWA Settings" button persists; the unsaved-changes bar
+// compares only these.
+type PwaNames = Pick<PwaSettings, "appName" | "appShortName">;
 
 const DEFAULT_PWA_SETTINGS: PwaSettings = {
   appName: "",
@@ -75,7 +89,9 @@ export const AdminSettingsTab = () => {
   const haptics = useHaptics();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pwaIconInputRef = useRef<HTMLInputElement>(null);
-  const [settings, setSettings] = useState<SessionSettings>(DEFAULT_SETTINGS);
+  const [settings, setSettings] = useState<OwnedSettings>(DEFAULT_SETTINGS);
+  // What the server last gave us or accepted; the unsaved-changes bar compares against it.
+  const [settingsSnapshot, setSettingsSnapshot] = useState<OwnedSettings>(DEFAULT_SETTINGS);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [customLogo, setCustomLogo] = useState<string | null>(null);
@@ -89,11 +105,12 @@ export const AdminSettingsTab = () => {
 
   // PWA settings state
   const [pwaSettings, setPwaSettings] = useState<PwaSettings>(DEFAULT_PWA_SETTINGS);
+  // hasCustomIcon is stored the moment an icon is uploaded or removed, so it is not part of
+  // this snapshot and never makes the tab look dirty.
+  const [pwaSnapshot, setPwaSnapshot] = useState<PwaNames>({ appName: "", appShortName: "" });
   const [isSavingPwa, setIsSavingPwa] = useState(false);
   const [isUploadingPwaIcon, setIsUploadingPwaIcon] = useState(false);
   const [pwaIconTimestamp, setPwaIconTimestamp] = useState(Date.now());
-
-  // CORS origins state
 
   useEffect(() => {
     loadSettings();
@@ -167,8 +184,11 @@ export const AdminSettingsTab = () => {
       
       if (error) throw new Error(error);
       
+      // Snapshot the normalised object rather than the raw payload so an untouched tab
+      // compares equal. A fresh install returns settings: null and keeps the defaults.
+      let loaded: OwnedSettings = DEFAULT_SETTINGS;
       if (data?.settings) {
-        setSettings({
+        loaded = {
           suggestion_order: data.settings.suggestion_order || "random",
           max_choices: data.settings.max_choices ?? 3,
           max_exclusions: data.settings.max_exclusions ?? 3,
@@ -180,13 +200,21 @@ export const AdminSettingsTab = () => {
           rating_display: data.settings.rating_display || "critic",
           enable_lobby_qr: data.settings.enable_lobby_qr ?? false,
           hard_filter_preferences: data.settings.hard_filter_preferences ?? true,
+          filter_watched_items: data.settings.filter_watched_items ?? true,
           require_plex_member: data.settings.require_plex_member ?? false,
           restrict_create_plex: data.settings.restrict_create_plex ?? false,
           restrict_create_password: data.settings.restrict_create_password ?? false,
           // Migrate the old boolean enable_trailers -> trailers_mode when needed.
           trailers_mode: data.settings.trailers_mode ?? (data.settings.enable_trailers ? "on" : "off"),
-        });
+          // Absent stage keys read as enabled, so pre-existing configs keep all stages.
+          question_stages: QUESTION_STAGES.reduce((acc, stage) => {
+            acc[stage.id] = isStageEnabled(data.settings.question_stages, stage.id);
+            return acc;
+          }, {} as Record<QuestionStageId, boolean>),
+        };
       }
+      setSettings(loaded);
+      setSettingsSnapshot(loaded);
     } catch (err) {
       console.error("Error loading settings:", err);
     } finally {
@@ -224,11 +252,12 @@ export const AdminSettingsTab = () => {
       }
       
       if (data?.settings) {
-        setPwaSettings({
+        const names: PwaNames = {
           appName: data.settings.appName || "",
           appShortName: data.settings.appShortName || "",
-          hasCustomIcon: data.settings.hasCustomIcon || false,
-        });
+        };
+        setPwaSettings({ ...names, hasCustomIcon: data.settings.hasCustomIcon || false });
+        setPwaSnapshot(names);
         setPwaIconTimestamp(Date.now());
       }
     } catch (err) {
@@ -245,6 +274,8 @@ export const AdminSettingsTab = () => {
       
       if (error) throw new Error(error);
       
+      // Only a successful save moves the baseline; after a failure the unsaved bar stays up.
+      setSettingsSnapshot(settings);
       haptics.success();
       toast.success("Settings saved successfully!");
     } catch (err) {
@@ -368,6 +399,7 @@ export const AdminSettingsTab = () => {
       // Refresh service worker to pick up new manifest
       await refreshServiceWorker();
       
+      setPwaSnapshot({ appName: pwaSettings.appName, appShortName: pwaSettings.appShortName });
       haptics.success();
       toast.success("PWA settings saved!", {
         description: "Users need to remove and re-add the app to their home screen to see the new name/icon.",
@@ -450,7 +482,26 @@ export const AdminSettingsTab = () => {
     }
   };
 
-  // CORS origins handlers
+  // Feed the shell's unsaved-changes bar and leave guard. Hooks: keep above the early return.
+  const settingsDirty = !deepEqual(settings, settingsSnapshot);
+  const pwaDirty =
+    pwaSettings.appName !== pwaSnapshot.appName ||
+    pwaSettings.appShortName !== pwaSnapshot.appShortName;
+  useUnsavedChanges({
+    id: "settings",
+    tab: "settings",
+    isDirty: settingsDirty,
+    save: handleSave,
+    discard: () => setSettings(settingsSnapshot),
+  });
+  useUnsavedChanges({
+    id: "pwa",
+    tab: "settings",
+    isDirty: pwaDirty,
+    save: handleSavePwaSettings,
+    // Spread over the current state so hasCustomIcon survives the revert.
+    discard: () => setPwaSettings((s) => ({ ...s, ...pwaSnapshot })),
+  });
 
   if (isLoading) {
     return (
@@ -624,6 +675,52 @@ export const AdminSettingsTab = () => {
         </div>
       </motion.div>
 
+      {/* Question Stages */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.18 }}
+        className="glass-card rounded-xl p-4 space-y-4"
+      >
+        <div>
+          <div className="flex items-center gap-2">
+            <ListChecks size={20} className="text-primary" />
+            <h2 className="font-semibold text-foreground">Question Stages</h2>
+          </div>
+          <p className="text-sm text-muted-foreground mt-1">
+            Choose which questions users answer before swiping. A disabled question is
+            treated as everyone answering "I don't mind".
+          </p>
+        </div>
+
+        <div className="space-y-4">
+          {QUESTION_STAGES.map((stage) => (
+            <div key={stage.id} className="flex items-center justify-between gap-4">
+              <div>
+                <p className="font-medium text-foreground">{stage.adminLabel}</p>
+                <p className="text-xs text-muted-foreground">{stage.adminDescription}</p>
+              </div>
+              <Switch
+                checked={settings.question_stages[stage.id]}
+                onCheckedChange={(checked) => {
+                  haptics.selection();
+                  setSettings(s => ({
+                    ...s,
+                    question_stages: { ...s.question_stages, [stage.id]: checked },
+                  }));
+                }}
+              />
+            </div>
+          ))}
+        </div>
+
+        {!QUESTION_STAGES.some(stage => settings.question_stages[stage.id]) && (
+          <p className="text-xs text-muted-foreground border-t border-border pt-3">
+            All questions are disabled — users will go straight from the lobby to swiping.
+          </p>
+        )}
+      </motion.div>
+
       {/* Suggestion Order */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
@@ -695,6 +792,33 @@ export const AdminSettingsTab = () => {
             onCheckedChange={(checked) => {
               haptics.selection();
               setSettings(s => ({ ...s, hard_filter_preferences: checked }));
+            }}
+          />
+        </div>
+      </motion.div>
+
+      {/* Filter Watched Items Toggle */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.27 }}
+        className="glass-card rounded-xl p-4"
+      >
+        <div className="flex items-center justify-between">
+          <div className="flex-1">
+            <div className="flex items-center gap-2">
+              <EyeOff size={20} className="text-primary" />
+              <h2 className="font-semibold text-foreground">Filter Watched Items</h2>
+            </div>
+            <p className="text-sm text-muted-foreground mt-1">
+              When enabled, users signed in with Plex won't be shown items they've already watched.
+            </p>
+          </div>
+          <Switch
+            checked={settings.filter_watched_items}
+            onCheckedChange={(checked) => {
+              haptics.selection();
+              setSettings(s => ({ ...s, filter_watched_items: checked }));
             }}
           />
         </div>

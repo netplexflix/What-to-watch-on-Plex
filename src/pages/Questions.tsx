@@ -8,6 +8,9 @@ import { QuestionFlow } from "@/components/QuestionFlow";
 import { sessionsApi, plexApi } from "@/lib/api";
 import { wsClient } from "@/lib/websocket";
 import { getLocalSession } from "@/lib/sessionStore";
+import { getEnabledStages, isStageEnabled } from "@/lib/questionStages";
+import { DEFAULT_QUESTION_FLOW_SETTINGS, type QuestionFlowSettings } from "@/types/settings";
+import type { SessionPreferences } from "@/types/session";
 import { toast } from "sonner";
 
 const Questions = () => {
@@ -17,12 +20,14 @@ const Questions = () => {
   const [loading, setLoading] = useState(true);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [languages, setLanguages] = useState<{ language: string; count: number }[]>([]);
+  const [settings, setSettings] = useState<QuestionFlowSettings>(DEFAULT_QUESTION_FLOW_SETTINGS);
   const [waitingForOthers, setWaitingForOthers] = useState(false);
   const [participantCount, setParticipantCount] = useState(0);
   const [completedCount, setCompletedCount] = useState(0);
-  
+
   // Refs for stable references in callbacks
   const isInitializedRef = useRef(false);
+  const autoCompletedRef = useRef(false);
   const sessionIdRef = useRef<string | null>(null);
   const waitingForOthersRef = useRef(false);
   const pollingIntervalRef = useRef<number | null>(null);
@@ -230,10 +235,22 @@ const Questions = () => {
           }
         }
 
-        // Fetch available languages
-        const { data: langData } = await plexApi.getLanguages();
-        if (langData?.languages) {
-          setLanguages(langData.languages);
+        // Admin config decides which question stages to ask. Fetched here rather than in
+        // QuestionFlow so the first paint already knows, and so we can detect the
+        // "no stages enabled" case before rendering anything.
+        let flowSettings = DEFAULT_QUESTION_FLOW_SETTINGS;
+        const { data: configData } = await sessionsApi.getConfig('session_settings');
+        if (configData?.value && typeof configData.value === 'object') {
+          flowSettings = { ...DEFAULT_QUESTION_FLOW_SETTINGS, ...configData.value };
+          setSettings(flowSettings);
+        }
+
+        // Fetch available languages (only needed when that stage is enabled)
+        if (isStageEnabled(flowSettings.question_stages, 'language')) {
+          const { data: langData } = await plexApi.getLanguages();
+          if (langData?.languages) {
+            setLanguages(langData.languages);
+          }
         }
 
         setLoading(false);
@@ -251,8 +268,10 @@ const Questions = () => {
     };
   }, [code, navigate, localSession, navigateToSwipe, startPolling]);
 
-  const handleComplete = async (preferences: any) => {
-    if (!localSession?.participantId || !sessionIdRef.current) {
+  const participantId = localSession?.participantId;
+
+  const handleComplete = useCallback(async (preferences: SessionPreferences) => {
+    if (!participantId || !sessionIdRef.current) {
       console.error('[Questions] Missing participantId or sessionId');
       return;
     }
@@ -260,14 +279,14 @@ const Questions = () => {
     const sid = sessionIdRef.current;
 
     try {
-      console.log('[Questions] Saving preferences for participant:', localSession.participantId);
-      
+      console.log('[Questions] Saving preferences for participant:', participantId);
+
       // Set waiting state immediately for better UX
       setWaitingForOthers(true);
       waitingForOthersRef.current = true;
-      
+
       // Save preferences and mark as completed
-      const { error } = await sessionsApi.updateParticipant(localSession.participantId, {
+      const { error } = await sessionsApi.updateParticipant(participantId, {
         preferences,
         questions_completed: true,
       });
@@ -295,7 +314,19 @@ const Questions = () => {
       setWaitingForOthers(false);
       waitingForOthersRef.current = false;
     }
-  };
+  }, [participantId, checkAndNavigateIfComplete, startPolling]);
+
+  // Every question stage is disabled in the admin panel: record this participant as
+  // having no preferences (equivalent to answering "I don't mind" everywhere) and let
+  // the existing completion gate move the group straight to swiping.
+  useEffect(() => {
+    if (loading || autoCompletedRef.current) return;
+    if (getEnabledStages(settings.question_stages).length > 0) return;
+
+    autoCompletedRef.current = true;
+    console.log('[Questions] No question stages enabled, skipping straight to swiping');
+    handleComplete({});
+  }, [loading, settings, handleComplete]);
 
   if (loading) {
     return (
@@ -305,7 +336,9 @@ const Questions = () => {
     );
   }
 
-  if (waitingForOthers) {
+  // No stages to ask — the effect above is submitting on our behalf; don't flash an
+  // empty questionnaire in the meantime.
+  if (waitingForOthers || getEnabledStages(settings.question_stages).length === 0) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-background px-6">
         <Logo size="md" className="justify-center mb-8" />
@@ -343,7 +376,7 @@ const Questions = () => {
             <Logo size="sm" />
           </div>
 
-          <QuestionFlow languages={languages} onComplete={handleComplete} />
+          <QuestionFlow settings={settings} languages={languages} onComplete={handleComplete} />
         </motion.div>
       </div>
     </div>

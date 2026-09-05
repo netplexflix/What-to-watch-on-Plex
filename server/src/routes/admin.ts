@@ -345,9 +345,11 @@ router.post('/get-session-settings', (req, res) => {
           restricted_labels: settings.restricted_labels,
           rating_display: settings.rating_display,
           enable_lobby_qr: settings.enable_lobby_qr,
-          enable_chat: settings.enable_chat,
           auto_cache_refresh: settings.auto_cache_refresh,
+          // { genre: bool, era: bool, language: bool } — a missing key reads as enabled.
+          question_stages: settings.question_stages,
           hard_filter_preferences: settings.hard_filter_preferences,
+          filter_watched_items: settings.filter_watched_items,
           require_plex_member: settings.require_plex_member,
           // Session creation restrictions (the password hash itself lives in its own
           // app_config key, never in this publicly readable blob).

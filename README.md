@@ -28,7 +28,7 @@ Main Features:
 - Optionally filter suggestions by `Collections`.<br> Want to decide on which Christmas movie to watch? Select your Christmas collection and start a session!
 - Optionally start a session from your `watchlist` items.
 - Include or Exclude items based on `Labels`.
-- Users set preferences for `Genre`, `Era` and `Language` to narrow down the suggestions. Tap once to prefer, twice to exclude.
+- Users optionally set preferences for `Genre`, `Era`, `Duration` and `Language` to narrow down the suggestions. Tap once to prefer, twice to exclude.
 - Flip cards over for details, Swipe left for Nope and right for Yes.
 - Optionally watch `Trailers` streamed straight from your Plex server.
 - Use your own `custom logo` on the landing page.
@@ -100,6 +100,7 @@ Equivalent to the `CORS_ORIGINS` environment variable, but managed at runtime wi
 > [!NOTE]
 > `Preferences` are seen just that. If user1 sets preference for `comedy` and user2 sets preference for `action` then the app will first try to find items with both genres, and otherwise suggests a mix of both.<br>
 > `Exclusions` are seen as hard limits. If a user marks `horror` in red, then no horror will be suggested at all.
+- **Question Stages:** Enable or disable the questions individually. A disabled question is treated as if everyone answered "I don't mind", so it simply doesn't narrow the suggestions. Disabling all three skips the questionnaire entirely and takes users straight from the lobby to swiping.
 - **Suggestion Order:**
   - `Random` (suggestions appear randomly for each user).
   - `Fixed` (everyone gets the same suggestions in the same order).

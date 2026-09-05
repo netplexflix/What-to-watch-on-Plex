@@ -16,6 +16,20 @@ import { SessionHistoryTab } from "@/components/admin/SessionHistoryTab";
 import { StatisticsTab } from "@/components/admin/StatisticsTab";
 import { CacheProgressIndicator } from "@/components/admin/CacheProgressIndicator";
 import { VersionInfo } from "@/components/admin/VersionInfo";
+import { UnsavedChangesProvider } from "@/components/admin/UnsavedChangesProvider";
+import { UnsavedChangesBar } from "@/components/admin/UnsavedChangesBar";
+import { useUnsavedChanges, useUnsavedChangesContext, type AdminTab } from "@/hooks/useUnsavedChanges";
+import { deepEqual } from "@/lib/deepEqual";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 interface PlexLibrary {
   key: string;
@@ -32,6 +46,15 @@ interface LastCacheRefresh {
   error?: string;
   success?: boolean;
 }
+
+interface ConnectionConfig {
+  plexUrl: string;
+  plexToken: string;
+  selectedLibraries: string[];
+}
+
+// A navigation the leave guard is holding until the user confirms discarding their edits.
+type PendingNav = { type: "tab"; tab: AdminTab } | { type: "leave" };
 
 const formatRelativeTime = (timestamp: string): string => {
   const date = new Date(timestamp);
@@ -54,9 +77,10 @@ const formatDateTime = (timestamp: string): string => {
   return date.toLocaleDateString() + ' at ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 };
 
-const Admin = () => {
+const AdminPage = () => {
   const navigate = useNavigate();
   const haptics = useHaptics();
+  const unsaved = useUnsavedChangesContext();
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -76,11 +100,20 @@ const Admin = () => {
   const [lastCacheRefresh, setLastCacheRefresh] = useState<LastCacheRefresh | null>(null);
   const [autoCacheRefresh, setAutoCacheRefresh] = useState(false);
   
-  const [activeTab, setActiveTab] = useState<"connection" | "settings" | "history" | "stats">("connection");
+  const [activeTab, setActiveTab] = useState<AdminTab>("connection");
   const [cacheProgress, setCacheProgress] = useState<CacheRefreshProgress | null>(null);
   const [corsOrigins, setCorsOrigins] = useState<string[]>([]);
   const [newOrigin, setNewOrigin] = useState("");
   const [isSavingCors, setIsSavingCors] = useState(false);
+
+  // Baselines for the unsaved-changes bar: what the server last gave us or accepted.
+  const [connectionSnapshot, setConnectionSnapshot] = useState<ConnectionConfig>({
+    plexUrl: "",
+    plexToken: "",
+    selectedLibraries: [],
+  });
+  const [corsSnapshot, setCorsSnapshot] = useState<string[]>([]);
+  const [pendingNav, setPendingNav] = useState<PendingNav | null>(null);
   
   const progressPollRef = useRef<number | null>(null);
 
@@ -117,20 +150,35 @@ const Admin = () => {
     }
   };
 
+  // Put a Plex configuration on screen the same way whether it just loaded or the user
+  // discarded their edits: fields, libraries and the "Connected" state move together.
+  const applyConnection = async ({ plexUrl: url, plexToken: token, selectedLibraries: libs }: ConnectionConfig) => {
+    setPlexUrl(url);
+    setPlexToken(token);
+    setSelectedLibraries(libs);
+    setConnectionError("");
+    if (url && token) {
+      await fetchLibraries(url, token);
+      setConnectionStatus("success");
+    } else {
+      setLibraries([]);
+      setConnectionStatus("untested");
+    }
+  };
+
   const loadConfig = async () => {
     try {
       const { data, error } = await adminApi.getConfig();
       if (error) throw new Error(error);
 
       if (data?.config) {
-        setPlexUrl(data.config.plex_url || "");
-        setPlexToken(data.config.plex_token || "");
-        setSelectedLibraries(data.config.libraries || []);
-
-        if (data.config.plex_url && data.config.plex_token) {
-          await fetchLibraries(data.config.plex_url, data.config.plex_token);
-          setConnectionStatus("success");
-        }
+        const loaded: ConnectionConfig = {
+          plexUrl: data.config.plex_url || "",
+          plexToken: data.config.plex_token || "",
+          selectedLibraries: data.config.libraries || [],
+        };
+        setConnectionSnapshot(loaded);
+        await applyConnection(loaded);
       }
     } catch (err) {
       console.error("Error loading config:", err);
@@ -287,6 +335,8 @@ const Admin = () => {
 
       if (error) throw new Error(error);
 
+      // Only a successful save moves the baseline; after a failure the unsaved bar stays up.
+      setConnectionSnapshot({ plexUrl, plexToken, selectedLibraries });
       toast.success("Settings saved successfully!");
     } catch (err) {
       console.error("Error saving config:", err);
@@ -330,6 +380,7 @@ const Admin = () => {
       }
       if (data?.origins) {
         setCorsOrigins(data.origins);
+        setCorsSnapshot(data.origins);
       }
     } catch (err) {
       console.error("Exception loading CORS origins:", err);
@@ -374,6 +425,7 @@ const Admin = () => {
       const { error } = await adminApi.saveCorsOrigins(corsOrigins);
       if (error) throw new Error(error);
 
+      setCorsSnapshot(corsOrigins);
       haptics.success();
       toast.success("Allowed domains saved!");
     } catch (err) {
@@ -383,6 +435,61 @@ const Admin = () => {
     } finally {
       setIsSavingCors(false);
     }
+  };
+
+  // Unsaved-changes tracking for the Connection tab's two saveable sections (the Settings
+  // tab registers its own). Hooks: keep above the early returns below.
+  useUnsavedChanges({
+    id: "connection",
+    tab: "connection",
+    isDirty: !deepEqual({ plexUrl, plexToken, selectedLibraries }, connectionSnapshot),
+    save: handleSave,
+    discard: () => {
+      void applyConnection(connectionSnapshot);
+    },
+  });
+  useUnsavedChanges({
+    id: "cors",
+    tab: "connection",
+    isDirty: !deepEqual(corsOrigins, corsSnapshot),
+    save: handleSaveCorsOrigins,
+    discard: () => setCorsOrigins(corsSnapshot),
+  });
+
+  // Warn before a reload or close while anything is unsaved. Same-document navigation
+  // (browser back) is not covered: useBlocker needs a data router and the app uses
+  // <BrowserRouter>.
+  useEffect(() => {
+    if (!unsaved.isAnyDirty) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [unsaved.isAnyDirty]);
+
+  const performNav = (nav: PendingNav) => {
+    if (nav.type === "tab") setActiveTab(nav.tab);
+    else navigate("/");
+  };
+
+  // Tab switches and the back arrow go through here so a dirty tab can ask first.
+  const requestNav = (nav: PendingNav) => {
+    haptics.selection();
+    if (nav.type === "tab" && nav.tab === activeTab) return;
+    if (unsaved.dirtySections(activeTab).length > 0) {
+      setPendingNav(nav);
+      return;
+    }
+    performNav(nav);
+  };
+
+  const confirmDiscardAndNav = () => {
+    if (!pendingNav) return;
+    unsaved.discardTab(activeTab);
+    performNav(pendingNav);
+    setPendingNav(null);
   };
 
   const pollProgress = useCallback(async () => {
@@ -509,7 +616,7 @@ const Admin = () => {
   return (
     <div className="min-h-screen flex flex-col">
       <div className="p-4 flex items-center gap-4">
-        <Button variant="ghost" size="icon" onClick={() => navigate("/")}>
+        <Button variant="ghost" size="icon" onClick={() => requestNav({ type: "leave" })}>
           <ArrowLeft size={24} />
         </Button>
         <h1 className="text-xl font-bold text-foreground">Admin Settings</h1>
@@ -518,10 +625,7 @@ const Admin = () => {
       <div className="px-6 mb-4">
         <div className="flex gap-1 p-1 bg-secondary rounded-lg">
           <button
-            onClick={() => {
-              haptics.selection();
-              setActiveTab("connection");
-            }}
+            onClick={() => requestNav({ type: "tab", tab: "connection" })}
             className={cn(
               "flex-1 py-2 px-3 rounded-md text-sm font-medium transition-all flex items-center justify-center gap-1",
               activeTab === "connection"
@@ -533,10 +637,7 @@ const Admin = () => {
             <span className="hidden sm:inline">Connection</span>
           </button>
           <button
-            onClick={() => {
-              haptics.selection();
-              setActiveTab("settings");
-            }}
+            onClick={() => requestNav({ type: "tab", tab: "settings" })}
             className={cn(
               "flex-1 py-2 px-3 rounded-md text-sm font-medium transition-all flex items-center justify-center gap-1",
               activeTab === "settings"
@@ -548,10 +649,7 @@ const Admin = () => {
             <span className="hidden sm:inline">Settings</span>
           </button>
           <button
-            onClick={() => {
-              haptics.selection();
-              setActiveTab("history");
-            }}
+            onClick={() => requestNav({ type: "tab", tab: "history" })}
             className={cn(
               "flex-1 py-2 px-3 rounded-md text-sm font-medium transition-all flex items-center justify-center gap-1",
               activeTab === "history"
@@ -563,10 +661,7 @@ const Admin = () => {
             <span className="hidden sm:inline">History</span>
           </button>
           <button
-            onClick={() => {
-              haptics.selection();
-              setActiveTab("stats");
-            }}
+            onClick={() => requestNav({ type: "tab", tab: "stats" })}
             className={cn(
               "flex-1 py-2 px-3 rounded-md text-sm font-medium transition-all flex items-center justify-center gap-1",
               activeTab === "stats"
@@ -579,6 +674,8 @@ const Admin = () => {
           </button>
         </div>
       </div>
+
+      <UnsavedChangesBar activeTab={activeTab} />
 
       <div className="flex-1 px-6 py-4 max-w-md mx-auto w-full space-y-6">
         {isLoadingConfig ? (
@@ -919,8 +1016,41 @@ const Admin = () => {
           </>
         )}
       </div>
+
+      <AlertDialog
+        open={pendingNav !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingNav(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Unsaved changes</AlertDialogTitle>
+            <AlertDialogDescription>
+              You have unsaved changes. Leave without saving?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Stay</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmDiscardAndNav}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Discard changes
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };
+
+// The provider wraps the page so the page itself can register its Connection-tab sections
+// and read the registry through the same context its child tabs use.
+const Admin = () => (
+  <UnsavedChangesProvider>
+    <AdminPage />
+  </UnsavedChangesProvider>
+);
 
 export default Admin;

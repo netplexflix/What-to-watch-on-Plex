@@ -6,7 +6,7 @@ import { ArrowLeft, User, LogIn, Check, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Logo } from "@/components/Logo";
-import { sessionsApi } from "@/lib/api";
+import { adminApi, sessionsApi } from "@/lib/api";
 import { saveLocalSession } from "@/lib/sessionStore";
 import { saveUserIdentity, getUserIdentity, clearUserIdentity, validatePlexToken } from "@/lib/userStore";
 import type { PlexUser } from "@/lib/userStore";
@@ -26,6 +26,14 @@ const JoinSession = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [sessionExists, setSessionExists] = useState(false);
   const [joinAsGuest, setJoinAsGuest] = useState(true);
+
+  // Caption under the Plex Login button reflects the admin's Filter Watched Items setting.
+  const [filterWatchedEnabled, setFilterWatchedEnabled] = useState(true);
+  useEffect(() => {
+    adminApi.getSessionSettings()
+      .then(({ data }) => setFilterWatchedEnabled(data?.settings?.filter_watched_items ?? true))
+      .catch(() => { /* keep the default */ });
+  }, []);
 
   // If access is gated and this user isn't verified, bounce back to the wall on `/`.
   useEffect(() => {
@@ -401,7 +409,9 @@ const JoinSession = () => {
                       ? "Connecting..."
                       : plexUser
                         ? "Signed in ✓"
-                        : "Filter watched"}
+                        : filterWatchedEnabled
+                          ? "Filter watched"
+                          : "Sign in with Plex"}
                   </p>
                 </button>
               </div>

@@ -7,6 +7,15 @@ import { encryptToken } from '../services/encryption.js';
 import { verifyPlexServerMembership } from './plex.js';
 import { createRateLimiter, verifyPasswordServer } from '../middleware/auth.js';
 
+// Sentinel item_key for a blank "no preference" final vote. final_votes.item_key is NOT NULL and
+// SQLite can't alter a column, so abstentions are stored as this key instead of NULL. Real Plex
+// ratingKeys are numeric strings, so it can never collide with an actual item.
+// Keep in sync with ABSTAIN_ITEM_KEY in src/types/session.ts.
+const ABSTAIN_ITEM_KEY = '__no_preference__';
+
+// The voting page shows at most this many posters, so an all-abstain roulette spins over the same set.
+const VOTING_CANDIDATE_LIMIT = 6;
+
 function getSessionSettings(db: any): any {
   const row = db.prepare('SELECT value FROM app_config WHERE key = ?').get('session_settings') as { value: string } | undefined;
   if (!row) return {};
@@ -834,44 +843,59 @@ router.delete('/:sessionId/votes/:participantId/:itemKey', (req, res) => {
   }
 });
 
+// Build the item lists the voting page renders: full matches, plus top-liked as a fallback.
+function getSessionMatches(db: any, sessionId: string): {
+  matches: string[];
+  topLiked: { itemKey: string; likeCount: number }[];
+} {
+  // Get all participants
+  const participants = db.prepare('SELECT id FROM session_participants WHERE session_id = ?').all(sessionId) as any[];
+  const totalParticipants = participants.length;
+
+  if (totalParticipants === 0) {
+    return { matches: [], topLiked: [] };
+  }
+
+  // Find items that ALL participants liked
+  const matchQuery = db.prepare(`
+    SELECT item_key, COUNT(DISTINCT participant_id) as like_count
+    FROM votes
+    WHERE session_id = ? AND vote = 1
+    GROUP BY item_key
+    HAVING like_count = ?
+  `).all(sessionId, totalParticipants) as { item_key: string; like_count: number }[];
+
+  const matches = matchQuery.map(m => m.item_key);
+
+  // Also get top liked items (for fallback if no matches)
+  const topLikedQuery = db.prepare(`
+    SELECT item_key, COUNT(DISTINCT participant_id) as like_count
+    FROM votes
+    WHERE session_id = ? AND vote = 1
+    GROUP BY item_key
+    ORDER BY like_count DESC
+    LIMIT 10
+  `).all(sessionId) as { item_key: string; like_count: number }[];
+
+  const topLiked = topLikedQuery.map(t => ({ itemKey: t.item_key, likeCount: t.like_count }));
+
+  return { matches, topLiked };
+}
+
+// The items actually on screen during voting - mirrors the client's choice of list and its cap.
+function getVotingCandidateKeys(db: any, sessionId: string, limit = VOTING_CANDIDATE_LIMIT): string[] {
+  const { matches, topLiked } = getSessionMatches(db, sessionId);
+  const keys = matches.length > 0 ? matches : topLiked.map(t => t.itemKey);
+  return keys.slice(0, limit);
+}
+
 // Get matches for timed/match-target session
 router.get('/:id/matches', (req, res) => {
   try {
     const { id } = req.params;
     const db = getDb();
-    
-    // Get all participants
-    const participants = db.prepare('SELECT id FROM session_participants WHERE session_id = ?').all(id) as any[];
-    const totalParticipants = participants.length;
-    
-    if (totalParticipants === 0) {
-      return res.json({ matches: [], topLiked: [] });
-    }
-    
-    // Find items that ALL participants liked
-    const matchQuery = db.prepare(`
-      SELECT item_key, COUNT(DISTINCT participant_id) as like_count
-      FROM votes
-      WHERE session_id = ? AND vote = 1
-      GROUP BY item_key
-      HAVING like_count = ?
-    `).all(id, totalParticipants) as { item_key: string; like_count: number }[];
-    
-    const matches = matchQuery.map(m => m.item_key);
-    
-    // Also get top liked items (for fallback if no matches)
-    const topLikedQuery = db.prepare(`
-      SELECT item_key, COUNT(DISTINCT participant_id) as like_count
-      FROM votes
-      WHERE session_id = ? AND vote = 1
-      GROUP BY item_key
-      ORDER BY like_count DESC
-      LIMIT 10
-    `).all(id) as { item_key: string; like_count: number }[];
-    
-    const topLiked = topLikedQuery.map(t => ({ itemKey: t.item_key, likeCount: t.like_count }));
-    
-    res.json({ matches, topLiked });
+
+    res.json(getSessionMatches(db, id));
   } catch (error) {
     console.error('Error getting matches:', error);
     res.status(500).json({ error: 'Failed to get matches' });
@@ -884,12 +908,15 @@ router.get('/:id/match-count', (req, res) => {
     const { id } = req.params;
     const db = getDb();
     
-    const session = db.prepare('SELECT match_target FROM sessions WHERE id = ?').get(id) as any;
+    const session = db.prepare('SELECT match_target, status FROM sessions WHERE id = ?').get(id) as any;
     const matchCount = countSessionMatches(db, id);
-    
-    res.json({ 
-      matchCount, 
-      matchTarget: session?.match_target || 0 
+
+    // `status` lets the swipe page's periodic sync notice the move to voting without a
+    // second request, so a client that missed the session_updated broadcast still follows.
+    res.json({
+      matchCount,
+      matchTarget: session?.match_target || 0,
+      status: session?.status || null
     });
   } catch (error) {
     console.error('Error getting match count:', error);
@@ -897,101 +924,177 @@ router.get('/:id/match-count', (req, res) => {
   }
 });
 
-// Cast final vote (for timed/match-target sessions)
+// Tally the final votes, mark the session completed and broadcast the outcome.
+// Shared by the "everyone voted" path and the host's manual end-of-voting override.
+function finalizeVoting(db: any, sessionId: string): {
+  winner: string | null;
+  wasTie: boolean;
+  tiedItems: string[];
+  voteCounts: Record<string, number>;
+} {
+  const finalVotes = db.prepare('SELECT * FROM final_votes WHERE session_id = ?').all(sessionId) as any[];
+
+  // Blank "no preference" votes count towards everyone having voted, but never towards an item.
+  const voteCounts = new Map<string, number>();
+  finalVotes
+    .filter((v: any) => v.item_key !== ABSTAIN_ITEM_KEY)
+    .forEach((v: any) => {
+      voteCounts.set(v.item_key, (voteCounts.get(v.item_key) || 0) + 1);
+    });
+
+  let topItems: string[];
+  let wasTie: boolean;
+
+  if (voteCounts.size === 0) {
+    // Nobody expressed a preference (all blank, or the host ended voting before any real vote):
+    // treat every item on the voting page as tied and let the roulette decide.
+    topItems = getVotingCandidateKeys(db, sessionId);
+    wasTie = topItems.length > 1;
+  } else {
+    let maxVotes = 0;
+    voteCounts.forEach((count) => {
+      if (count > maxVotes) maxVotes = count;
+    });
+
+    topItems = [];
+    voteCounts.forEach((count, itemKey) => {
+      if (count === maxVotes) topItems.push(itemKey);
+    });
+
+    wasTie = topItems.length > 1;
+  }
+
+  const countsObject = Object.fromEntries(voteCounts);
+
+  if (topItems.length === 0) {
+    // No votes and no candidates - nothing to declare, leave the session as-is.
+    console.warn(`[Sessions] Cannot finalize voting for session ${sessionId}: no votes and no candidates`);
+    return { winner: null, wasTie: false, tiedItems: [], voteCounts: countsObject };
+  }
+
+  const winner = topItems.length === 1
+    ? topItems[0]
+    : topItems[Math.floor(Math.random() * topItems.length)];
+
+  // Update session
+  db.prepare(`
+    UPDATE sessions SET winner_item_key = ?, status = 'completed', updated_at = datetime('now')
+    WHERE id = ?
+  `).run(winner, sessionId);
+
+  // Record in history
+  recordSessionHistory(db, sessionId, winner);
+
+  const tiedItems = wasTie ? topItems : [];
+
+  // Broadcast result
+  broadcastToSession(sessionId, 'voting_complete', {
+    winner,
+    wasTie,
+    tiedItems,
+    voteCounts: countsObject,
+  });
+
+  return { winner, wasTie, tiedItems, voteCounts: countsObject };
+}
+
+// Cast final vote (for timed/match-target sessions).
+// itemKey may be ABSTAIN_ITEM_KEY for a blank "no preference" vote.
 router.post('/:id/final-vote', (req, res) => {
   try {
     const { id } = req.params;
     const { participantId, itemKey } = req.body;
-    
+
     if (!participantId || !itemKey) {
       return res.status(400).json({ error: 'participantId and itemKey are required' });
     }
-    
+
     const db = getDb();
-    
+
     // Check if final_votes table exists
     const tableExists = db.prepare(
       "SELECT name FROM sqlite_master WHERE type='table' AND name='final_votes'"
     ).get();
-    
+
     if (!tableExists) {
       return res.status(500).json({ error: 'Final votes feature not available' });
     }
-    
+
     // Upsert final vote
     db.prepare(`
       INSERT INTO final_votes (id, session_id, participant_id, item_key, created_at)
       VALUES (?, ?, ?, ?, datetime('now'))
       ON CONFLICT(session_id, participant_id) DO UPDATE SET item_key = excluded.item_key, created_at = datetime('now')
     `).run(generateId(), id, participantId, itemKey);
-    
+
     // Broadcast vote update
     broadcastToSession(id, 'final_vote_cast', { participantId, itemKey });
-    
+
     // Check if all participants have voted
     const participants = db.prepare('SELECT id FROM session_participants WHERE session_id = ?').all(id) as any[];
-    const finalVotes = db.prepare('SELECT * FROM final_votes WHERE session_id = ?').all(id) as any[];
-    
-    if (finalVotes.length === participants.length) {
+    const votedCount = (db.prepare(
+      'SELECT COUNT(*) as count FROM final_votes WHERE session_id = ?'
+    ).get(id) as { count: number }).count;
+
+    if (votedCount === participants.length) {
       // All voted - determine winner
-      const voteCounts = new Map<string, number>();
-      finalVotes.forEach((v: any) => {
-        voteCounts.set(v.item_key, (voteCounts.get(v.item_key) || 0) + 1);
-      });
-      
-      // Find max votes
-      let maxVotes = 0;
-      voteCounts.forEach((count) => {
-        if (count > maxVotes) maxVotes = count;
-      });
-      
-      // Get items with max votes
-      const topItems: string[] = [];
-      voteCounts.forEach((count, itemKey) => {
-        if (count === maxVotes) topItems.push(itemKey);
-      });
-      
-      let winner: string;
-      let wasTie = false;
-      
-      if (topItems.length === 1) {
-        winner = topItems[0];
-      } else {
-        // Tie - pick random
-        wasTie = true;
-        winner = topItems[Math.floor(Math.random() * topItems.length)];
-      }
-      
-      // Update session
-      db.prepare(`
-        UPDATE sessions SET winner_item_key = ?, status = 'completed', updated_at = datetime('now')
-        WHERE id = ?
-      `).run(winner, id);
-      
-      // Record in history
-      recordSessionHistory(db, id, winner);
-      
-      // Broadcast result
-      broadcastToSession(id, 'voting_complete', { 
-        winner, 
-        wasTie, 
-        tiedItems: wasTie ? topItems : [],
-        voteCounts: Object.fromEntries(voteCounts)
-      });
-      
-      return res.json({ 
-        success: true, 
-        allVoted: true, 
-        winner, 
-        wasTie, 
-        tiedItems: wasTie ? topItems : [] 
+      const { winner, wasTie, tiedItems } = finalizeVoting(db, id);
+
+      return res.json({
+        success: true,
+        allVoted: true,
+        winner,
+        wasTie,
+        tiedItems,
       });
     }
-    
-    res.json({ success: true, allVoted: false, votedCount: finalVotes.length, totalCount: participants.length });
+
+    res.json({ success: true, allVoted: false, votedCount, totalCount: participants.length });
   } catch (error) {
     console.error('Error casting final vote:', error);
     res.status(500).json({ error: 'Failed to cast vote' });
+  }
+});
+
+// End voting early (host only) - e.g. when a participant disconnected without voting.
+// Participants with no final_votes row are simply absent from the tally.
+router.post('/:id/finish-voting', (req, res) => {
+  try {
+    const { id } = req.params;
+    const { participantId } = req.body;
+
+    if (!participantId) {
+      return res.status(400).json({ error: 'participantId is required' });
+    }
+
+    const db = getDb();
+
+    const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as any;
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    if (session.host_user_id !== participantId) {
+      return res.status(403).json({ error: 'Only the host can end voting' });
+    }
+
+    // Already decided (double click, or the last vote landed first) - report the stored winner.
+    if (session.status === 'completed' && session.winner_item_key) {
+      return res.json({ success: true, winner: session.winner_item_key, wasTie: false, tiedItems: [] });
+    }
+
+    console.log(`[Sessions] Host ended voting early for session ${id}`);
+
+    const { winner, wasTie, tiedItems } = finalizeVoting(db, id);
+
+    if (!winner) {
+      return res.status(400).json({ error: 'No votes or candidates to decide a winner' });
+    }
+
+    res.json({ success: true, winner, wasTie, tiedItems });
+  } catch (error) {
+    console.error('Error finishing voting:', error);
+    res.status(500).json({ error: 'Failed to end voting' });
   }
 });
 

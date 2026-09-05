@@ -1,52 +1,30 @@
 /**
  * Haptic feedback hook for vibration-enabled devices
  */
+import { useMemo } from "react";
+
 export const useHaptics = () => {
-  const isSupported = typeof navigator !== "undefined" && "vibrate" in navigator;
+  // Memoized so the returned object keeps a stable identity. Callers put `haptics` in
+  // effect dependency arrays; a fresh object per render would tear down and recreate
+  // those effects every render, which silently kills any interval longer than the
+  // render cadence (e.g. the 2s poll in Swipe.tsx against the 1s countdown timer).
+  return useMemo(() => {
+    const isSupported = typeof navigator !== "undefined" && "vibrate" in navigator;
 
-  const light = () => {
-    if (isSupported) {
-      navigator.vibrate(10);
-    }
-  };
+    const vibrate = (pattern: number | number[]) => {
+      if (isSupported) {
+        navigator.vibrate(pattern);
+      }
+    };
 
-  const medium = () => {
-    if (isSupported) {
-      navigator.vibrate(25);
-    }
-  };
-
-  const heavy = () => {
-    if (isSupported) {
-      navigator.vibrate(50);
-    }
-  };
-
-  const success = () => {
-    if (isSupported) {
-      navigator.vibrate([25, 50, 25]);
-    }
-  };
-
-  const error = () => {
-    if (isSupported) {
-      navigator.vibrate([50, 50, 50]);
-    }
-  };
-
-  const selection = () => {
-    if (isSupported) {
-      navigator.vibrate(5);
-    }
-  };
-
-  return {
-    isSupported,
-    light,
-    medium,
-    heavy,
-    success,
-    error,
-    selection,
-  };
+    return {
+      isSupported,
+      light: () => vibrate(10),
+      medium: () => vibrate(25),
+      heavy: () => vibrate(50),
+      success: () => vibrate([25, 50, 25]),
+      error: () => vibrate([50, 50, 50]),
+      selection: () => vibrate(5),
+    };
+  }, []);
 };

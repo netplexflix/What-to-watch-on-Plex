@@ -121,22 +121,6 @@ function normalizeLanguage(lang: string): string {
   return lang.toLowerCase().trim();
 }
 
-// Check if item languages match preferred languages
-function itemMatchesLanguages(itemLanguages: string[], preferredLanguages: string[]): boolean {
-  if (preferredLanguages.length === 0) return true;
-  if (itemLanguages.length === 0) return false;
-  
-  const normalizedItemLangs = itemLanguages.map(normalizeLanguage);
-  
-  for (const preferred of preferredLanguages) {
-    if (normalizedItemLangs.includes(normalizeLanguage(preferred))) {
-      return true;
-    }
-  }
-  
-  return false;
-}
-
 // Count how many preferred languages an item matches
 function countMatchingLanguages(itemLanguages: string[], preferredLanguages: string[]): number {
   if (preferredLanguages.length === 0 || itemLanguages.length === 0) return 0;
@@ -192,7 +176,6 @@ function matchesEra(year: number, era: string): boolean {
   switch (era) {
     case '6months': return year >= sixMonthsAgoYear && year <= currentYear;
     case '2years': return year >= currentYear - 2;
-    case 'recent': return year >= currentYear - 2; // Keep for backwards compatibility
     case '2020s': return year >= 2020;
     case '2010s': return year >= 2010 && year < 2020;
     case '2000s': return year >= 2000 && year < 2010;
@@ -201,6 +184,24 @@ function matchesEra(year: number, era: string): boolean {
     case 'classic': return year < 1980;
     default: return false;
   }
+}
+
+// Keep bucket boundaries in sync with matchesRuntime in server/src/routes/plex.ts
+// and the RUNTIMES labels in questionStages.ts. duration is in milliseconds.
+function matchesRuntime(durationMs: number, bucket: string): boolean {
+  const mins = durationMs / 60000;
+  switch (bucket) {
+    case 'short': return mins < 90;
+    case 'medium': return mins >= 90 && mins <= 120;
+    case 'long': return mins > 120;
+    default: return false;
+  }
+}
+
+// Count how many preferred runtime buckets an item matches (buckets are disjoint, so 0 or 1)
+function countMatchingRuntimes(durationMs: number, preferredRuntimes: string[]): number {
+  if (preferredRuntimes.length === 0 || !durationMs) return 0;
+  return preferredRuntimes.filter((bucket) => matchesRuntime(durationMs, bucket)).length;
 }
 
 // Score an item based on how well it matches preferences (higher = better match)
@@ -218,6 +219,8 @@ function scoreItem(item: any, filters: any, boosted: boolean = false): number {
   const genrePer = boosted ? 100 : 50;
   const eraBase = boosted ? 200 : 25;
   const eraPer = boosted ? 100 : 25;
+  const rtBase = boosted ? 200 : 25;
+  const rtPer = boosted ? 100 : 25;
   const langBase = boosted ? 200 : 35;
   const langPer = boosted ? 100 : 40;
 
@@ -232,6 +235,13 @@ function scoreItem(item: any, filters: any, boosted: boolean = false): number {
     const eraMatches = countMatchingEras(year, filters.eras);
     if (eraMatches > 0) {
       score += eraBase + (eraMatches * eraPer);
+    }
+  }
+
+  if (filters.runtimes?.length > 0 && item.duration) {
+    const runtimeMatches = countMatchingRuntimes(item.duration, filters.runtimes);
+    if (runtimeMatches > 0) {
+      score += rtBase + (runtimeMatches * rtPer);
     }
   }
 
@@ -442,6 +452,8 @@ const Swipe = () => {
     const allExcludedGenres: string[] = [];
     const participantsWithEras: string[][] = [];
     const allExcludedEras: string[] = [];
+    const participantsWithRuntimes: string[][] = [];
+    const allExcludedRuntimes: string[] = [];
     const participantsWithLanguages: string[][] = [];
     const allExcludedLanguages: string[] = [];
 
@@ -450,12 +462,17 @@ const Swipe = () => {
         participantsWithGenres.push(p.preferences.genres);
       }
       if (p.preferences?.excludedGenres) allExcludedGenres.push(...p.preferences.excludedGenres);
-      
+
       if (p.preferences?.eras && p.preferences.eras.length > 0) {
         participantsWithEras.push(p.preferences.eras);
       }
       if (p.preferences?.excludedEras) allExcludedEras.push(...p.preferences.excludedEras);
-      
+
+      if (p.preferences?.runtimes && p.preferences.runtimes.length > 0) {
+        participantsWithRuntimes.push(p.preferences.runtimes);
+      }
+      if (p.preferences?.excludedRuntimes) allExcludedRuntimes.push(...p.preferences.excludedRuntimes);
+
       if (p.preferences?.languages && p.preferences.languages.length > 0) {
         participantsWithLanguages.push(p.preferences.languages);
       }
@@ -474,6 +491,12 @@ const Swipe = () => {
       finalEras = [...new Set(allEras)];
     }
 
+    let finalRuntimes: string[] = [];
+    if (participantsWithRuntimes.length > 0) {
+      const allRuntimes = participantsWithRuntimes.flat();
+      finalRuntimes = [...new Set(allRuntimes)];
+    }
+
     let finalLanguages: string[] = [];
     if (participantsWithLanguages.length > 0) {
       const allLanguages = participantsWithLanguages.flat();
@@ -485,6 +508,8 @@ const Swipe = () => {
       excludedGenres: [...new Set(allExcludedGenres)],
       eras: finalEras,
       excludedEras: [...new Set(allExcludedEras)],
+      runtimes: finalRuntimes,
+      excludedRuntimes: [...new Set(allExcludedRuntimes)],
       languages: finalLanguages,
       excludedLanguages: [...new Set(allExcludedLanguages)],
     };
@@ -523,6 +548,7 @@ const Swipe = () => {
       // Load admin settings
       let currentLabelRestrictions = labelRestrictionsRef.current;
       let hardFilterPreferences = true;
+      let filterWatchedItems = true;
       try {
         const { data: settingsData } = await adminApi.getSessionSettings();
         if (settingsData?.settings) {
@@ -532,6 +558,7 @@ const Swipe = () => {
           const trailersMode = settingsData.settings.trailers_mode ?? (settingsData.settings.enable_trailers ? 'on' : 'off');
           setEnableTrailers(trailersMode === 'on');
           hardFilterPreferences = settingsData.settings.hard_filter_preferences ?? true;
+          filterWatchedItems = settingsData.settings.filter_watched_items ?? true;
           if (settingsData.settings.enable_label_restrictions) {
             currentLabelRestrictions = {
               enabled: true,
@@ -645,6 +672,7 @@ const Swipe = () => {
       const hasExclusions = aggregatedFilters && (
         (aggregatedFilters.excludedGenres?.length > 0) ||
         (aggregatedFilters.excludedEras?.length > 0) ||
+        (aggregatedFilters.excludedRuntimes?.length > 0) ||
         (aggregatedFilters.excludedLanguages?.length > 0)
       );
 
@@ -666,7 +694,13 @@ const Swipe = () => {
               return false;
             }
           }
-          
+
+          if (aggregatedFilters.excludedRuntimes && aggregatedFilters.excludedRuntimes.length > 0 && item.duration) {
+            if (aggregatedFilters.excludedRuntimes.some((r: string) => matchesRuntime(item.duration, r))) {
+              return false;
+            }
+          }
+
           if (aggregatedFilters.excludedLanguages && aggregatedFilters.excludedLanguages.length > 0) {
             if (itemLanguages.length > 0) {
               const normalizedItemLangs = itemLanguages.map(normalizeLanguage);
@@ -685,6 +719,7 @@ const Swipe = () => {
       const hasPreferences = aggregatedFilters && (
         (aggregatedFilters.genres?.length > 0) ||
         (aggregatedFilters.eras?.length > 0) ||
+        (aggregatedFilters.runtimes?.length > 0) ||
         (aggregatedFilters.languages?.length > 0)
       );
 
@@ -703,6 +738,12 @@ const Swipe = () => {
 
           if (aggregatedFilters.eras && aggregatedFilters.eras.length > 0 && year) {
             if (!aggregatedFilters.eras.some((era: string) => matchesEra(year, era))) {
+              return false;
+            }
+          }
+
+          if (aggregatedFilters.runtimes && aggregatedFilters.runtimes.length > 0 && item.duration) {
+            if (!aggregatedFilters.runtimes.some((r: string) => matchesRuntime(item.duration, r))) {
               return false;
             }
           }
@@ -794,8 +835,8 @@ const Swipe = () => {
         console.log('[Swipe] Top 5 items:', topItems.map(i => `${i.title} (score: ${i._score}, genres: ${i.genres.join(', ')})`));
       }
 
-      // Filter watched items
-      if (isPlexUser && localSession?.participantId) {
+      // Filter watched items (admins can turn this off via the Filter Watched Items setting)
+      if (filterWatchedItems && isPlexUser && localSession?.participantId) {
         setLoadingMessage("Filtering watched items...");
         try {
           const { data: watchedData } = await sessionsApi.getWatchedKeys(sid, localSession.participantId);
@@ -1108,22 +1149,38 @@ const Swipe = () => {
     return () => clearInterval(intervalId);
   }, [sessionId, loading, waitingForQuestions, matchFound, navigateToResults, navigate, code, haptics]);
 
-  // Periodic match count sync for match target sessions (backup for missed WebSocket events)
+  // Periodic match count + status sync for match target sessions (backup for missed
+  // WebSocket events). This is the safety net that gets a participant who has finished
+  // their deck off the "All Done!" screen once the target is reached, so every value in
+  // the dependency array below must keep a stable identity across renders — an unstable
+  // one would tear the interval down before it can fire (the countdown timer re-renders
+  // this component every second).
   useEffect(() => {
     if (!sessionId || !isMatchTargetSession || loading || waitingForQuestions || hasNavigatedRef.current) return;
 
-    const syncMatchCount = async () => {
+    const syncMatchState = async () => {
       if (hasNavigatedRef.current) return;
-      
+
       try {
         const response = await fetch(`/api/sessions/${sessionId}/match-count`);
-        if (response.ok) {
-          const data = await response.json();
-          if (data.matchCount !== undefined && data.matchCount !== matchCountRef.current) {
-            console.log(`[Swipe] Match count synced: ${data.matchCount} (was ${matchCountRef.current})`);
-            setMatchCount(data.matchCount);
-            matchCountRef.current = data.matchCount;
-          }
+        if (!response.ok) return;
+
+        const data = await response.json();
+
+        if (data.matchCount !== undefined && data.matchCount !== matchCountRef.current) {
+          console.log(`[Swipe] Match count synced: ${data.matchCount} (was ${matchCountRef.current})`);
+          setMatchCount(data.matchCount);
+          matchCountRef.current = data.matchCount;
+        }
+
+        // The session moved on without us (target hit by someone else, or the host
+        // advanced it) and we never saw the broadcast.
+        if (data.status === 'voting' && !hasNavigatedRef.current) {
+          console.log("[Swipe] Voting status detected via periodic sync");
+          hasNavigatedRef.current = true;
+          haptics.success();
+          toast.success("Match target reached! Time to vote!");
+          navigate(`/timed-results/${code}`);
         }
       } catch (err) {
         // Silently ignore
@@ -1131,10 +1188,10 @@ const Swipe = () => {
     };
 
     // Sync every 3 seconds
-    const intervalId = setInterval(syncMatchCount, 3000);
+    const intervalId = setInterval(syncMatchState, 3000);
 
     return () => clearInterval(intervalId);
-  }, [sessionId, isMatchTargetSession, loading, waitingForQuestions]);
+  }, [sessionId, isMatchTargetSession, loading, waitingForQuestions, code, navigate, haptics]);
 
   const handleSwipe = useCallback(
     async (direction: "left" | "right") => {

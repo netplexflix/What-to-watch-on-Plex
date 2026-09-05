@@ -555,6 +555,16 @@ export const sessionsApi = {
       `/sessions/${sessionId}/final-votes`
     ),
 
+  // Host-only: end voting before everyone has voted (e.g. someone disconnected)
+  finishVoting: (sessionId: string, participantId: string) =>
+    fetchApi<{ success: boolean; winner?: string; wasTie?: boolean; tiedItems?: string[] }>(
+      `/sessions/${sessionId}/finish-voting`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ participantId }),
+      }
+    ),
+
   getConfig: (key: string) =>
     fetchApi<{ value: any }>(`/sessions/config/${key}`),
 

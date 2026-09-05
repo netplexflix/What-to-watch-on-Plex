@@ -1,244 +1,196 @@
 //file: /src/components/QuestionFlow.tsx
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronRight, Calendar, Globe, Check, Info } from "lucide-react";
+import { ChevronRight, Globe, Check, Info } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { plexApi, sessionsApi } from "@/lib/api";
+import { plexApi } from "@/lib/api";
 import { TriStateButton } from "@/components/TriStateButton";
 import { useHaptics } from "@/hooks/useHaptics";
+import {
+  ERAS,
+  GENRES,
+  RUNTIMES,
+  QUESTION_STAGES,
+  getEnabledStages,
+  isStageEnabled,
+  type QuestionOption,
+  type QuestionStageDef,
+  type QuestionStageId,
+} from "@/lib/questionStages";
+import type { QuestionFlowSettings } from "@/types/settings";
 import type { SessionPreferences, SelectionState } from "@/types/session";
 
 interface QuestionFlowProps {
   onComplete: (preferences: SessionPreferences) => void;
+  /** Admin config. Owned by the parent so the first paint already knows which stages to show. */
+  settings: QuestionFlowSettings;
   languages?: { language: string; count: number }[];
   className?: string;
 }
 
-interface SessionSettings {
-  max_choices: number;
-  max_exclusions: number;
-  suggestion_order: "random" | "fixed";
-  filter_watched: boolean;
-}
-
-const DEFAULT_SETTINGS: SessionSettings = {
-  max_choices: 3,
-  max_exclusions: 3,
-  suggestion_order: "random",
-  filter_watched: true,
-};
-
-const GENRES = [
-  "Action", "Adventure", "Animation", "Comedy", "Crime", 
-  "Documentary", "Drama", "Family", "Fantasy", "Horror",
-  "Mystery", "Romance", "Sci-Fi", "Thriller", "War"
-];
-
-const ERAS = [
-  { value: "6months", label: "Past 6 months" },
-  { value: "2years", label: "Past 2 years" },
-  { value: "2020s", label: "2020s" },
-  { value: "2010s", label: "2010s" },
-  { value: "2000s", label: "2000s" },
-  { value: "90s", label: "90s" },
-  { value: "80s", label: "80s" },
-  { value: "classic", label: "Classic" },
-];
-
 type TriStateMap = Record<string, SelectionState>;
 
-export const QuestionFlow = ({ onComplete, languages: propLanguages, className }: QuestionFlowProps) => {
+const emptyStates = (): Record<QuestionStageId, TriStateMap> => ({
+  genre: {},
+  era: {},
+  runtime: {},
+  language: {},
+});
+
+// Every stage starts as "I don't mind", so Continue is enabled from the first paint.
+const allDontMind = (): Record<QuestionStageId, boolean> => ({
+  genre: true,
+  era: true,
+  runtime: true,
+  language: true,
+});
+
+export const QuestionFlow = ({
+  onComplete,
+  settings,
+  languages: propLanguages,
+  className,
+}: QuestionFlowProps) => {
   const haptics = useHaptics();
   const [step, setStep] = useState(0);
-  const [genreStates, setGenreStates] = useState<TriStateMap>({});
-  const [eraStates, setEraStates] = useState<TriStateMap>({});
-  const [languageStates, setLanguageStates] = useState<TriStateMap>({});
-  const [dontMindGenres, setDontMindGenres] = useState(true);
-  const [dontMindEras, setDontMindEras] = useState(true);
-  const [dontMindLanguages, setDontMindLanguages] = useState(true);
-  
+  const [states, setStates] = useState<Record<QuestionStageId, TriStateMap>>(emptyStates);
+  const [dontMind, setDontMind] = useState<Record<QuestionStageId, boolean>>(allDontMind);
+
+  const languageStageEnabled = isStageEnabled(settings.question_stages, "language");
   const [availableLanguages, setAvailableLanguages] = useState<string[]>([]);
-  const [languagesLoading, setLanguagesLoading] = useState(true);
-  
-  // Session settings for max choices/exclusions
-  const [settings, setSettings] = useState<SessionSettings>(DEFAULT_SETTINGS);
+  const [languagesLoading, setLanguagesLoading] = useState(languageStageEnabled);
+
+  const enabledStages = useMemo(
+    () => getEnabledStages(settings.question_stages),
+    [settings.question_stages]
+  );
+  const currentStage: QuestionStageDef | undefined = enabledStages[step];
 
   useEffect(() => {
-    // Use languages from props if provided
-    if (propLanguages && propLanguages.length > 0) {
-      console.log('QuestionFlow: Using prop languages:', propLanguages);
-      setAvailableLanguages(propLanguages.map(l => l.language));
+    // Nothing to load when the language stage is switched off.
+    if (!languageStageEnabled) {
       setLanguagesLoading(false);
-    } else {
-      // Fetch languages from API
-      const fetchLanguages = async () => {
-        setLanguagesLoading(true);
-        try {
-          console.log('QuestionFlow: Fetching languages from API...');
-          const { data, error } = await plexApi.getLanguages();
-          console.log('QuestionFlow: API response:', { data, error });
-          
-          if (error) {
-            console.error('QuestionFlow: API error:', error);
-            setAvailableLanguages([]);
-          } else if (data?.languages && Array.isArray(data.languages)) {
-            const langs = data.languages.map((l: any) => l.language);
-            console.log('QuestionFlow: Setting languages:', langs);
-            setAvailableLanguages(langs);
-          } else {
-            console.log('QuestionFlow: No languages in response');
-            setAvailableLanguages([]);
-          }
-        } catch (err) {
-          console.error("QuestionFlow: Failed to fetch languages:", err);
-          setAvailableLanguages([]);
-        } finally {
-          setLanguagesLoading(false);
-        }
-      };
-      fetchLanguages();
+      return;
     }
-    
-    // Fetch session settings
-    const fetchSettings = async () => {
+
+    if (propLanguages && propLanguages.length > 0) {
+      setAvailableLanguages(propLanguages.map((l) => l.language));
+      setLanguagesLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    const fetchLanguages = async () => {
+      setLanguagesLoading(true);
       try {
-        const { data } = await sessionsApi.getConfig('session_settings');
-        if (data?.value && typeof data.value === 'object') {
-          setSettings({ ...DEFAULT_SETTINGS, ...data.value });
+        const { data, error } = await plexApi.getLanguages();
+        if (cancelled) return;
+        if (error || !data?.languages || !Array.isArray(data.languages)) {
+          setAvailableLanguages([]);
+        } else {
+          setAvailableLanguages(data.languages.map((l: { language: string }) => l.language));
         }
       } catch (err) {
-        console.error("Failed to fetch settings:", err);
+        console.error("QuestionFlow: Failed to fetch languages:", err);
+        if (!cancelled) setAvailableLanguages([]);
+      } finally {
+        if (!cancelled) setLanguagesLoading(false);
       }
     };
-    fetchSettings();
-  }, [propLanguages]);
+    fetchLanguages();
 
-  const steps = [
-    { question: "Pick some genres you'd enjoy", subtext: "Tap once to prefer, twice to exclude" },
-    { question: "From which era?", subtext: "Tap once to prefer, twice to exclude" },
-    { question: "Which languages?", subtext: "Tap once to prefer, twice to exclude" },
-  ];
+    return () => {
+      cancelled = true;
+    };
+  }, [propLanguages, languageStageEnabled]);
+
+  // Resolving a stage's options is the only place a stage needs special handling — the
+  // JSX below is fully generic.
+  const currentOptions = useMemo((): {
+    options: QuestionOption[];
+    loading: boolean;
+    emptyMessage: string | null;
+  } => {
+    switch (currentStage?.id) {
+      case "genre":
+        return { options: GENRES, loading: false, emptyMessage: null };
+      case "era":
+        return { options: ERAS, loading: false, emptyMessage: null };
+      case "runtime":
+        return { options: RUNTIMES, loading: false, emptyMessage: null };
+      case "language":
+        return {
+          options: availableLanguages.map((l) => ({ value: l, label: l })),
+          loading: languagesLoading,
+          emptyMessage: "No language data available. Continue to see all content.",
+        };
+      default:
+        return { options: [], loading: false, emptyMessage: null };
+    }
+  }, [currentStage, availableLanguages, languagesLoading]);
+
+  const countSelections = (stageStates: TriStateMap, type: "choices" | "exclusions") =>
+    Object.values(stageStates).filter((v) => (type === "choices" ? v === true : v === false)).length;
 
   const handleNext = () => {
     haptics.medium();
-    if (step < steps.length - 1) {
+    if (step < enabledStages.length - 1) {
       setStep(step + 1);
-    } else {
-      // Build preferences from states
-      const genres = dontMindGenres 
-        ? [] 
-        : Object.entries(genreStates)
-            .filter(([_, state]) => state === true)
-            .map(([genre]) => genre);
-      const excludedGenres = dontMindGenres
-        ? []
-        : Object.entries(genreStates)
-            .filter(([_, state]) => state === false)
-            .map(([genre]) => genre);
-      
-      const eras = dontMindEras 
-        ? [] 
-        : Object.entries(eraStates)
-            .filter(([_, state]) => state === true)
-            .map(([era]) => era);
-      const excludedEras = dontMindEras
-        ? []
-        : Object.entries(eraStates)
-            .filter(([_, state]) => state === false)
-            .map(([era]) => era);
-      
-      const languages = dontMindLanguages 
-        ? [] 
-        : Object.entries(languageStates)
-            .filter(([_, state]) => state === true)
-            .map(([lang]) => lang);
-      const excludedLanguages = dontMindLanguages
-        ? []
-        : Object.entries(languageStates)
-            .filter(([_, state]) => state === false)
-            .map(([lang]) => lang);
-
-      onComplete({
-        genres,
-        excludedGenres,
-        eras,
-        excludedEras,
-        languages,
-        excludedLanguages,
-      });
+      return;
     }
-  };
 
-  const hasAnySelection = (states: TriStateMap) => {
-    return Object.values(states).some((v) => v !== undefined);
+    // Build over every stage, not just the enabled ones: a disabled stage never leaves
+    // dontMind === true, so it contributes empty arrays — which the aggregation in
+    // Swipe.tsx already treats as "no preference". This also keeps the submitted
+    // payload the same shape regardless of which stages are switched on.
+    const preferences: SessionPreferences = {};
+    for (const stage of QUESTION_STAGES) {
+      const stageStates = dontMind[stage.id] ? {} : states[stage.id];
+      preferences[stage.prefKey] = Object.entries(stageStates)
+        .filter(([, state]) => state === true)
+        .map(([value]) => value);
+      preferences[stage.excludeKey] = Object.entries(stageStates)
+        .filter(([, state]) => state === false)
+        .map(([value]) => value);
+    }
+
+    onComplete(preferences);
   };
 
   const canContinue = () => {
-    switch (step) {
-      case 0:
-        return dontMindGenres || hasAnySelection(genreStates);
-      case 1:
-        return dontMindEras || hasAnySelection(eraStates);
-      case 2:
-        return dontMindLanguages || hasAnySelection(languageStates) || availableLanguages.length === 0;
-      default:
-        return true;
-    }
+    if (!currentStage) return true;
+    if (dontMind[currentStage.id]) return true;
+    if (Object.values(states[currentStage.id]).some((v) => v !== undefined)) return true;
+    // Nothing to pick from (e.g. no language data cached) — don't strand the user.
+    return currentOptions.options.length === 0;
   };
 
-  // Count selections for limit enforcement
-  const countSelections = (states: TriStateMap, type: "choices" | "exclusions") => {
-    return Object.values(states).filter(v => type === "choices" ? v === true : v === false).length;
-  };
-
-  // Get current counts for display
-  const getCurrentCounts = () => {
-    let states: TriStateMap;
-    let dontMind: boolean;
-    
-    switch (step) {
-      case 0:
-        states = genreStates;
-        dontMind = dontMindGenres;
-        break;
-      case 1:
-        states = eraStates;
-        dontMind = dontMindEras;
-        break;
-      case 2:
-        states = languageStates;
-        dontMind = dontMindLanguages;
-        break;
-      default:
-        return { choices: 0, exclusions: 0 };
-    }
-    
-    if (dontMind) return { choices: 0, exclusions: 0 };
-    
+  const currentCounts = (() => {
+    if (!currentStage || dontMind[currentStage.id]) return { choices: 0, exclusions: 0 };
+    const stageStates = states[currentStage.id];
     return {
-      choices: countSelections(states, "choices"),
-      exclusions: countSelections(states, "exclusions"),
+      choices: countSelections(stageStates, "choices"),
+      exclusions: countSelections(stageStates, "exclusions"),
     };
+  })();
+
+  const handleDontMind = (stageId: QuestionStageId) => {
+    haptics.selection();
+    setDontMind((prev) => ({ ...prev, [stageId]: true }));
+    setStates((prev) => ({ ...prev, [stageId]: {} }));
   };
 
-  // Generic toggle handler with smart limit handling
-  const handleToggle = (
-    key: string,
-    states: TriStateMap,
-    setStates: React.Dispatch<React.SetStateAction<TriStateMap>>,
-    setDontMind: React.Dispatch<React.SetStateAction<boolean>>
-  ) => {
-    setDontMind(false);
-    
-    const currentState = states[key];
-    const choiceCount = countSelections(states, "choices");
-    const exclusionCount = countSelections(states, "exclusions");
-    
+  // undefined -> prefer -> exclude -> undefined, with the configured limits applied.
+  const handleToggle = (stageId: QuestionStageId, key: string) => {
+    const stageStates = states[stageId];
+    const currentState = stageStates[key];
+    const choiceCount = countSelections(stageStates, "choices");
+    const exclusionCount = countSelections(stageStates, "exclusions");
+
     let nextState: SelectionState;
-    
+
     if (currentState === undefined) {
-      // Not selected -> try to prefer, or exclude if at preference limit
       if (choiceCount >= settings.max_choices) {
         // Preference limit reached, go directly to exclusion if allowed
         if (exclusionCount >= settings.max_exclusions) {
@@ -249,42 +201,36 @@ export const QuestionFlow = ({ onComplete, languages: propLanguages, className }
         nextState = true; // Normal: prefer
       }
     } else if (currentState === true) {
-      // Preferred -> try to exclude
       if (exclusionCount >= settings.max_exclusions) {
         nextState = undefined; // Can't exclude, go back to unselected
       } else {
         nextState = false; // Normal: exclude
       }
     } else {
-      // Excluded -> unselected
       nextState = undefined;
     }
-    
+
     haptics.selection();
-    setStates({ ...states, [key]: nextState });
+    setDontMind((prev) => ({ ...prev, [stageId]: false }));
+    setStates((prev) => ({ ...prev, [stageId]: { ...prev[stageId], [key]: nextState } }));
   };
 
-  const handleGenreToggle = (genre: string) => {
-    handleToggle(genre, genreStates, setGenreStates, setDontMindGenres);
-  };
+  // The parent skips rendering this component entirely when no stage is enabled.
+  if (!currentStage) return null;
 
-  const handleEraToggle = (era: string) => {
-    handleToggle(era, eraStates, setEraStates, setDontMindEras);
-  };
-
-  const handleLanguageToggle = (lang: string) => {
-    handleToggle(lang, languageStates, setLanguageStates, setDontMindLanguages);
-  };
-
-  const currentCounts = getCurrentCounts();
+  const stageStates = states[currentStage.id];
+  const stageDontMind = dontMind[currentStage.id];
+  const OptionIcon = currentStage.optionIcon;
+  const optionState = (value: string): SelectionState =>
+    stageDontMind ? undefined : stageStates[value];
 
   return (
     <div className={cn("w-full max-w-md mx-auto", className)}>
       {/* Progress bar */}
       <div className="flex gap-2 mb-8">
-        {steps.map((_, i) => (
+        {enabledStages.map((stage, i) => (
           <div
-            key={i}
+            key={stage.id}
             className={cn(
               "h-1 flex-1 rounded-full transition-all duration-300",
               i <= step ? "bg-primary" : "bg-secondary"
@@ -295,18 +241,14 @@ export const QuestionFlow = ({ onComplete, languages: propLanguages, className }
 
       <AnimatePresence mode="wait">
         <motion.div
-          key={step}
+          key={currentStage.id}
           initial={{ opacity: 0, x: 20 }}
           animate={{ opacity: 1, x: 0 }}
           exit={{ opacity: 0, x: -20 }}
           transition={{ duration: 0.3 }}
         >
-          <h2 className="text-2xl font-bold text-foreground mb-2">
-            {steps[step].question}
-          </h2>
-          <p className="text-sm text-muted-foreground mb-4">
-            {steps[step].subtext}
-          </p>
+          <h2 className="text-2xl font-bold text-foreground mb-2">{currentStage.question}</h2>
+          <p className="text-sm text-muted-foreground mb-4">{currentStage.subtext}</p>
 
           {/* Selection limits info */}
           <div className="flex items-center gap-2 mb-6 p-3 rounded-lg bg-secondary/50">
@@ -321,167 +263,81 @@ export const QuestionFlow = ({ onComplete, languages: propLanguages, className }
             </p>
           </div>
 
-          {/* Step 0: Genres */}
-          {step === 0 && (
+          {currentOptions.loading ? (
+            <div className="text-center py-8">
+              <div className="animate-spin w-8 h-8 border-2 border-primary border-t-transparent rounded-full mx-auto mb-4" />
+              <p className="text-muted-foreground">Loading options...</p>
+            </div>
+          ) : currentOptions.options.length === 0 ? (
+            <div className="text-center py-8">
+              <Globe size={48} className="mx-auto text-muted-foreground mb-4" />
+              <p className="text-muted-foreground">{currentOptions.emptyMessage}</p>
+              <p className="text-xs text-muted-foreground mt-2">
+                Try refreshing the cache in the admin panel.
+              </p>
+            </div>
+          ) : (
             <div className="space-y-4">
               {/* I don't mind option */}
               <button
-                onClick={() => {
-                  haptics.selection();
-                  setDontMindGenres(true);
-                  setGenreStates({});
-                }}
+                onClick={() => handleDontMind(currentStage.id)}
                 className={cn(
                   "w-full p-4 rounded-xl transition-all duration-200 text-left border-2 flex items-center gap-3",
-                  dontMindGenres
+                  stageDontMind
                     ? "glass-card border-primary glow-primary"
                     : "glass-card border-transparent hover:border-muted-foreground/30"
                 )}
               >
-                <div className={cn(
-                  "w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all",
-                  dontMindGenres 
-                    ? "bg-primary border-primary" 
-                    : "border-muted-foreground"
-                )}>
-                  {dontMindGenres && <Check size={14} className="text-primary-foreground" />}
+                <div
+                  className={cn(
+                    "w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all",
+                    stageDontMind ? "bg-primary border-primary" : "border-muted-foreground"
+                  )}
+                >
+                  {stageDontMind && <Check size={14} className="text-primary-foreground" />}
                 </div>
                 <div>
                   <span className="font-medium text-foreground">I don't mind</span>
-                  <p className="text-xs text-muted-foreground">Show all genres</p>
+                  <p className="text-xs text-muted-foreground">{currentStage.dontMindHint}</p>
                 </div>
               </button>
-              
-              <div className="flex flex-wrap gap-2">
-                {GENRES.map((genre) => (
-                  <TriStateButton
-                    key={genre}
-                    label={genre}
-                    state={dontMindGenres ? undefined : genreStates[genre]}
-                    onToggle={() => handleGenreToggle(genre)}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
 
-          {/* Step 1: Era (multi-select) */}
-          {step === 1 && (
-            <div className="space-y-4">
-              {/* I don't mind option */}
-              <button
-                onClick={() => {
-                  haptics.selection();
-                  setDontMindEras(true);
-                  setEraStates({});
-                }}
+              <div
                 className={cn(
-                  "w-full p-3 rounded-xl transition-all duration-200 text-left border-2 flex items-center gap-3",
-                  dontMindEras
-                    ? "glass-card border-primary glow-primary"
-                    : "glass-card border-transparent hover:border-muted-foreground/30"
+                  currentStage.layout === "grid"
+                    ? "grid grid-cols-2 gap-2"
+                    : "flex flex-wrap gap-2",
+                  currentStage.scrollOptions && "max-h-48 overflow-y-auto"
                 )}
               >
-                <div className={cn(
-                  "w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all",
-                  dontMindEras 
-                    ? "bg-primary border-primary" 
-                    : "border-muted-foreground"
-                )}>
-                  {dontMindEras && <Check size={12} className="text-primary-foreground" />}
-                </div>
-                <div>
-                  <span className="font-medium text-foreground text-sm">I don't mind</span>
-                  <p className="text-xs text-muted-foreground">Show from any era</p>
-                </div>
-              </button>
-              
-              <div className="grid grid-cols-2 gap-2">
-                {ERAS.map((era) => (
-                  <TriStateButton
-                    key={era.value}
-                    label={era.label}
-                    state={dontMindEras ? undefined : eraStates[era.value]}
-                    onToggle={() => handleEraToggle(era.value)}
-                    icon={
-                      <Calendar
-                        size={16}
-                        className={cn(
-                          !dontMindEras && eraStates[era.value] === true
-                            ? "text-white"
-                            : !dontMindEras && eraStates[era.value] === false
-                            ? "text-destructive-foreground"
-                            : "text-muted-foreground"
-                        )}
-                      />
-                    }
-                    variant="card"
-                    size="sm"
-                  />
-                ))}
+                {currentOptions.options.map((option) => {
+                  const state = optionState(option.value);
+                  return (
+                    <TriStateButton
+                      key={option.value}
+                      label={option.label}
+                      state={state}
+                      onToggle={() => handleToggle(currentStage.id, option.value)}
+                      variant={currentStage.layout === "grid" ? "card" : "chip"}
+                      size={currentStage.layout === "grid" ? "sm" : "default"}
+                      icon={
+                        OptionIcon ? (
+                          <OptionIcon
+                            size={16}
+                            className={cn(
+                              state === true
+                                ? "text-white"
+                                : state === false
+                                ? "text-destructive-foreground"
+                                : "text-muted-foreground"
+                            )}
+                          />
+                        ) : undefined
+                      }
+                    />
+                  );
+                })}
               </div>
-            </div>
-          )}
-
-          {/* Step 2: Languages */}
-          {step === 2 && (
-            <div className="space-y-4">
-              {languagesLoading ? (
-                <div className="text-center py-8">
-                  <div className="animate-spin w-8 h-8 border-2 border-primary border-t-transparent rounded-full mx-auto mb-4" />
-                  <p className="text-muted-foreground">Loading languages...</p>
-                </div>
-              ) : availableLanguages.length === 0 ? (
-                <div className="text-center py-8">
-                  <Globe size={48} className="mx-auto text-muted-foreground mb-4" />
-                  <p className="text-muted-foreground">
-                    No language data available. Continue to see all content.
-                  </p>
-                  <p className="text-xs text-muted-foreground mt-2">
-                    Try refreshing the cache in the admin panel.
-                  </p>
-                </div>
-              ) : (
-                <>
-                  <button
-                    onClick={() => {
-                      haptics.selection();
-                      setDontMindLanguages(true);
-                      setLanguageStates({});
-                    }}
-                    className={cn(
-                      "w-full p-4 rounded-xl transition-all duration-200 text-left border-2 flex items-center gap-3",
-                      dontMindLanguages
-                        ? "glass-card border-primary glow-primary"
-                        : "glass-card border-transparent hover:border-muted-foreground/30"
-                    )}
-                  >
-                    <div className={cn(
-                      "w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all",
-                      dontMindLanguages 
-                        ? "bg-primary border-primary" 
-                        : "border-muted-foreground"
-                    )}>
-                      {dontMindLanguages && <Check size={14} className="text-primary-foreground" />}
-                    </div>
-                    <div>
-                      <span className="font-medium text-foreground">I don't mind</span>
-                      <p className="text-xs text-muted-foreground">Show content in any language</p>
-                    </div>
-                  </button>
-                  
-                  <div className="flex flex-wrap gap-2 max-h-48 overflow-y-auto">
-                    {availableLanguages.map((language) => (
-                      <TriStateButton
-                        key={language}
-                        label={language}
-                        state={dontMindLanguages ? undefined : languageStates[language]}
-                        onToggle={() => handleLanguageToggle(language)}
-                      />
-                    ))}
-                  </div>
-                </>
-              )}
             </div>
           )}
         </motion.div>
@@ -494,7 +350,7 @@ export const QuestionFlow = ({ onComplete, languages: propLanguages, className }
           disabled={!canContinue()}
           className="w-full h-12 text-base font-semibold bg-primary hover:bg-primary/90 text-primary-foreground"
         >
-          {step === steps.length - 1 ? "Start Swiping" : "Continue"}
+          {step === enabledStages.length - 1 ? "Start Swiping" : "Continue"}
           <ChevronRight className="ml-2" size={20} />
         </Button>
       </div>

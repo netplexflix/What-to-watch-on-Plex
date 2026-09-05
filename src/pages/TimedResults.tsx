@@ -2,8 +2,18 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Loader2, Check, Users, Home } from "lucide-react";
+import { Loader2, Check, Users, Home, CircleSlash, SkipForward } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Logo } from "@/components/Logo";
 import { RouletteWinner } from "@/components/RouletteWinner";
 import { MatchCelebration } from "@/components/MatchCelebration";
@@ -15,7 +25,8 @@ import { wsClient } from "@/lib/websocket";
 import { getLocalSession, clearLocalSession } from "@/lib/sessionStore";
 import { toast } from "sonner";
 import { useHaptics } from "@/hooks/useHaptics";
-import type { PlexItem } from "@/types/session";
+import { cn } from "@/lib/utils";
+import { ABSTAIN_ITEM_KEY, type PlexItem } from "@/types/session";
 
 const transformToPlexItem = (item: any): PlexItem => ({
   ratingKey: item.ratingKey,
@@ -63,6 +74,8 @@ const TimedResults = () => {
   const [isMatchTargetSession, setIsMatchTargetSession] = useState(false);
   const [isTimedSession, setIsTimedSession] = useState(false);
   const [matchTarget, setMatchTarget] = useState(0);
+  const [showFinishConfirm, setShowFinishConfirm] = useState(false);
+  const [isFinishing, setIsFinishing] = useState(false);
 
   // Warm trailer availability for the voting cards so the button appears without delay.
   useEffect(() => {
@@ -411,6 +424,44 @@ const TimedResults = () => {
     }
   };
 
+  const finishVoting = useCallback(async () => {
+    if (!sessionId || !localSession) return;
+    if (isFinishing) return;
+
+    setIsFinishing(true);
+    haptics.medium();
+
+    try {
+      const { data, error } = await sessionsApi.finishVoting(sessionId, localSession.participantId);
+
+      if (error) throw new Error(error);
+
+      if (data?.winner && !hasHandledResultRef.current) {
+        handleVotingResult({
+          winner: data.winner,
+          wasTie: data.wasTie || false,
+          tiedItems: data.tiedItems,
+        });
+      }
+    } catch (error) {
+      haptics.error();
+      console.error("[TimedResults] Error ending voting:", error);
+      toast.error("Failed to end voting");
+    } finally {
+      setIsFinishing(false);
+    }
+  }, [sessionId, localSession, isFinishing, haptics, handleVotingResult]);
+
+  const handleContinueClick = () => {
+    // Everyone already voted - the result is on its way, no need to warn about anything.
+    if (votingStatus.total > 0 && votingStatus.voted >= votingStatus.total) {
+      finishVoting();
+      return;
+    }
+    haptics.selection();
+    setShowFinishConfirm(true);
+  };
+
   const handleRouletteComplete = useCallback(() => {
     const winner = rouletteItems.find(item => item.ratingKey === rouletteWinner);
     if (winner) {
@@ -605,6 +656,28 @@ const TimedResults = () => {
           ))}
         </div>
 
+        {/* Blank vote - selected like a poster, confirmed with the same Cast Vote button */}
+        <button
+          type="button"
+          onClick={() => {
+            if (hasVoted) return;
+            haptics.selection();
+            handleSelectItem(ABSTAIN_ITEM_KEY);
+          }}
+          disabled={hasVoted}
+          className={cn(
+            "w-full max-w-sm mx-auto mb-4 flex items-center justify-center gap-2 rounded-xl px-4 py-3",
+            "glass-card text-sm font-medium text-muted-foreground transition-all duration-200",
+            selectedItem === ABSTAIN_ITEM_KEY
+              ? "ring-4 ring-primary ring-offset-2 ring-offset-background text-foreground"
+              : "hover:text-foreground",
+            hasVoted && selectedItem !== ABSTAIN_ITEM_KEY && "opacity-40"
+          )}
+        >
+          {selectedItem === ABSTAIN_ITEM_KEY ? <Check size={16} /> : <CircleSlash size={16} />}
+          No preference
+        </button>
+
         <div className="mt-auto">
           {pageState === 'voting' && !hasVoted ? (
             <Button
@@ -620,10 +693,45 @@ const TimedResults = () => {
               <p className="text-sm text-muted-foreground">
                 Waiting for others to vote...
               </p>
+              {isHost && (
+                <Button
+                  onClick={handleContinueClick}
+                  disabled={isFinishing}
+                  variant="outline"
+                  className="w-full max-w-sm mx-auto mt-4 h-11 font-semibold border-secondary text-foreground hover:bg-secondary flex"
+                >
+                  {isFinishing ? (
+                    <>
+                      <Loader2 className="mr-2 animate-spin" size={18} />
+                      Ending vote...
+                    </>
+                  ) : (
+                    <>
+                      <SkipForward size={18} className="mr-2" />
+                      Continue
+                    </>
+                  )}
+                </Button>
+              )}
             </div>
           )}
         </div>
       </div>
+
+      <AlertDialog open={showFinishConfirm} onOpenChange={setShowFinishConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Not everyone has voted yet</AlertDialogTitle>
+            <AlertDialogDescription>
+              {votingStatus.voted} of {votingStatus.total} have voted. Are you sure you want to continue?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>No</AlertDialogCancel>
+            <AlertDialogAction onClick={() => finishVoting()}>Yes</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };
