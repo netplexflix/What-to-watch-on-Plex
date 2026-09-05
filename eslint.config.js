@@ -5,7 +5,8 @@ import reactRefresh from "eslint-plugin-react-refresh";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["dist"] },
+  // Both are build output, not sources.
+  { ignores: ["dist", "server/dist"] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ["**/*.{ts,tsx}"],
@@ -21,6 +22,17 @@ export default tseslint.config(
       ...reactHooks.configs.recommended.rules,
       "react-refresh/only-export-components": ["warn", { allowConstantExport: true }],
       "@typescript-eslint/no-unused-vars": "off",
+      // Plenty of untyped Plex API payloads flow through this codebase; worth flagging,
+      // not worth failing a lint run over.
+      "@typescript-eslint/no-explicit-any": "warn",
+    },
+  },
+  {
+    // Vendored shadcn/ui primitives — kept close to upstream rather than hand-maintained.
+    files: ["src/components/ui/**"],
+    rules: {
+      "react-refresh/only-export-components": "off",
+      "@typescript-eslint/no-empty-object-type": "off",
     },
   },
 );

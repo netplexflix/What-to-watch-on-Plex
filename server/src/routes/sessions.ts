@@ -5,13 +5,40 @@ import { getDb, generateId } from '../db.js';
 import { broadcastToSession } from '../websocket.js';
 import { encryptToken } from '../services/encryption.js';
 import { verifyPlexServerMembership } from './plex.js';
+import { createRateLimiter, verifyPasswordServer } from '../middleware/auth.js';
+
+function getSessionSettings(db: any): any {
+  const row = db.prepare('SELECT value FROM app_config WHERE key = ?').get('session_settings') as { value: string } | undefined;
+  if (!row) return {};
+  try {
+    return JSON.parse(row.value) || {};
+  } catch {
+    return {};
+  }
+}
 
 function isPlexMemberGateEnabled(db: any): boolean {
-  const row = db.prepare('SELECT value FROM app_config WHERE key = ?').get('session_settings') as { value: string } | undefined;
-  if (!row) return false;
+  return !!getSessionSettings(db).require_plex_member;
+}
+
+// Stored hash for the session creation password, or null when none is configured.
+function getCreatePasswordHash(db: any): string | null {
+  const row = db.prepare('SELECT value FROM app_config WHERE key = ?').get('create_session_password') as { value: string } | undefined;
+  if (!row) return null;
   try {
-    const settings = JSON.parse(row.value);
-    return !!settings.require_plex_member;
+    const config = JSON.parse(row.value);
+    return config?.hash || null;
+  } catch {
+    return null;
+  }
+}
+
+function isCreatePasswordCorrect(db: any, password: unknown): boolean {
+  const hash = getCreatePasswordHash(db);
+  if (!hash) return true; // Restriction enabled but never configured — don't lock anyone out.
+  if (!password || typeof password !== 'string') return false;
+  try {
+    return verifyPasswordServer(password, hash);
   } catch {
     return false;
   }
@@ -39,7 +66,57 @@ async function enforcePlexMemberGate(
   return true;
 }
 
+// Session creation restrictions. Both may be enabled, in which case both must pass.
+// Returns true if the request may create a session; otherwise responds with 403 and returns false.
+async function enforceCreateGate(
+  db: any,
+  res: Response,
+  plexToken: string | undefined,
+  isGuest: boolean,
+  createPassword: unknown
+): Promise<boolean> {
+  const settings = getSessionSettings(db);
+
+  if (settings.restrict_create_plex) {
+    if (isGuest || !plexToken || typeof plexToken !== 'string') {
+      res.status(403).json({ error: 'Plex sign-in is required to create a session.' });
+      return false;
+    }
+    const { hasAccess } = await verifyPlexServerMembership(plexToken);
+    if (!hasAccess) {
+      res.status(403).json({ error: 'Your Plex account does not have access to this server.' });
+      return false;
+    }
+  }
+
+  if (settings.restrict_create_password && !isCreatePasswordCorrect(db, createPassword)) {
+    res.status(403).json({ error: 'Incorrect session password.' });
+    return false;
+  }
+
+  return true;
+}
+
 const router = Router();
+
+const createPasswordRateLimiter = createRateLimiter(15 * 60 * 1000, 20); // 15 min window, 20 max
+
+// Verify the session creation password (used to gate before opening the create page)
+router.post('/verify-create-password', createPasswordRateLimiter, (req, res) => {
+  try {
+    const { password } = req.body || {};
+    const db = getDb();
+
+    if (!getSessionSettings(db).restrict_create_password) {
+      return res.json({ valid: true });
+    }
+
+    res.json({ valid: isCreatePasswordCorrect(db, password) });
+  } catch (error) {
+    console.error('[Sessions] Error verifying create password:', error);
+    res.status(500).json({ error: 'Failed to verify password' });
+  }
+});
 
 function generateSessionCode(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -71,8 +148,8 @@ function countSessionMatches(db: any, sessionId: string): number {
 // Create session
 router.post('/create', async (req, res) => {
   try {
-    const { mediaType, displayName, isGuest, plexToken, timedDuration, useWatchlist, matchTarget } = req.body;
-    const { plexToken: _logToken, ...safeLogBody } = req.body;
+    const { mediaType, displayName, isGuest, plexToken, timedDuration, useWatchlist, matchTarget, createPassword } = req.body;
+    const { plexToken: _logToken, createPassword: _logCreatePassword, ...safeLogBody } = req.body;
     console.log('[Sessions] Create request body:', JSON.stringify(safeLogBody));
 
     // Validate required fields
@@ -85,6 +162,11 @@ router.post('/create', async (req, res) => {
 
     // Enforce optional "require Plex server access" gate
     if (!(await enforcePlexMemberGate(db, res, plexToken, !!isGuest))) {
+      return;
+    }
+
+    // Enforce optional restrictions on who may create a session
+    if (!(await enforceCreateGate(db, res, plexToken, !!isGuest, createPassword))) {
       return;
     }
 
@@ -525,14 +607,11 @@ router.post('/:id/votes', (req, res) => {
     // Broadcast vote to other participants
     broadcastToSession(id, 'vote_added', { participantId, itemKey, vote });
     
-    // Check session type (timed, match_target, or classic)
+    // Check session type (timed, match_target, timed+target, or classic)
     const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as any;
-    
-    // For timed sessions, don't check for immediate match
-    if (session?.timed_duration) {
-      return res.json({ success: true, voteId, match: false });
-    }
-    
+
+    // Match target takes precedence over the timer: a timed+target session still has to
+    // count matches so it can end early once the target is reached.
     // For match_target sessions, check if this vote created a new match
     if (session?.match_target && session.match_target > 0) {
       // Always compute the current match count after any YES vote
@@ -578,7 +657,12 @@ router.post('/:id/votes', (req, res) => {
       const matchCount = countSessionMatches(db, id);
       return res.json({ success: true, voteId, match: false, matchCount });
     }
-    
+
+    // For timed sessions without a target, don't check for immediate match
+    if (session?.timed_duration) {
+      return res.json({ success: true, voteId, match: false });
+    }
+
     // Check for match if this was a YES vote (classic non-timed session)
     if (vote) {
       const matchResult = checkForMatchServer(db, id, itemKey);
@@ -683,7 +767,9 @@ function recordSessionHistory(db: any, sessionId: string, winnerItemKey: string 
     
     const participantNames = participants.map(p => p.display_name);
     
-    const sessionType = session.match_target
+    const sessionType = session.timed_duration && session.match_target
+      ? 'timed_target'
+      : session.match_target
       ? 'target'
       : session.timed_duration
       ? 'timed'

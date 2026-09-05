@@ -18,7 +18,7 @@ interface SessionHistoryItem {
   winner_thumb: string | null;
   media_type: string | null;
   was_timed: boolean;
-  session_type: 'classic' | 'timed' | 'target' | null;
+  session_type: 'classic' | 'timed' | 'target' | 'timed_target' | null;
   completed_at: string;
 }
 
@@ -216,7 +216,13 @@ export const SessionHistoryTab = () => {
                         {item.media_type}
                       </span>
                     )}
-                    {item.session_type === 'target' ? (
+                    {item.session_type === 'timed_target' ? (
+                      <span className="flex items-center gap-1 text-primary">
+                        <Clock size={12} />
+                        <Target size={12} />
+                        Timed + Target
+                      </span>
+                    ) : item.session_type === 'target' ? (
                       <span className="flex items-center gap-1 text-primary">
                         <Target size={12} />
                         Target

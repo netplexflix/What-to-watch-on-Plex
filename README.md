@@ -34,10 +34,12 @@ Main Features:
 - Use your own `custom logo` on the landing page.
 - Admin panel for Settings and a `Session History` tab.
 - Choose between `Random` or `Fixed` suggestion order.
-- Three Session Modes:
+- Four Session Modes:
   - `Classic`: Swipe until you have a match liked by everyone.
   - `Timed`: Swipe for chosen amount of time and vote for the best matches. Includes a tie breaker.
   - `Match Target`: Swipe until chosen amount of matches are made and vote on them. Includes a tie breaker.
+  - `Timed + Target`: Set both a duration and a match target. The session ends whichever happens first, then everyone votes on the collected matches. Includes a tie breaker.
+- Optionally limit who can create sessions: `Plex users only` and/or a `session password`.
 - Installable as PWA 
 
 ---
@@ -109,10 +111,17 @@ Equivalent to the `CORS_ORIGINS` environment variable, but managed at runtime wi
 - **Trailers:** Add a `Watch Trailer` button to cards. Trailers are streamed from your Plex server. Three modes:
   - `Off` (default): no trailer button.
   - `On`: trailer button on detail cards
-  - `Voting only`: trailer button appears **only** on the voting cards at the end of `Timed` and `Match Target` sessions — so swiping stays fast, but everyone can watch the trailers of the matched items before casting their final vote.
+  - `Voting only`: trailer button appears **only** on the voting cards at the end of `Timed`, `Match Target` and `Timed + Target` sessions — so swiping stays fast, but everyone can watch the trailers of the matched items before casting their final vote.
 > [!TIP]
 > Missing trailers for certain items? Take a look at [MTDP](https://github.com/netplexflix/Missing-Trailer-Downloader-For-Plex) (Missing Trailer Downloader for Plex)
 - **Label Restrictions:** Include or Exclude items based on Plex labels.
+- **Require Plex Server Access:** Only allow users who log in with Plex and have access to your Plex server to use the app at all. Guests are blocked from creating *and* joining.
+- **Session Creation:** Limit who can *start* a session. Joining an existing session is unaffected. Two independent restrictions:
+  - `Plex users only`: only users signed in with Plex oAuth who have access to your server can create a session.
+  - `Password protected`: users need a password to create a session. This password is set here and is **separate from the admin panel password**.
+> [!NOTE]
+> Both restrictions can be enabled at the same time, in which case a user needs to satisfy **both** to create a session.<br>
+> Enabling `Password protected` without setting a password leaves creation open, so you can't lock yourself out.
 - **PWA Customization:** Customize the PWA name and icon.
 
 ---
@@ -125,7 +134,7 @@ The current version of Swiparr meanwhile *does* support Plex as well, but not al
 |---|:---:|:---:|
 | Multi-media-server support | ❌<br><sub>(Plex only)</sub> | ✅<br><sub>(Jellyfin/Emby/Plex/TMDB)</sub> |
 | TV show support | ✅ | ❌ |
-| Timed mode / Match-Target session modes + tie-breaker | ✅ | ❌ |
+| Timed / Match-Target / Timed+Target session modes + tie-breaker | ✅ | ❌ |
 | Trailer playback | ✅ | ❌ |
 | Plex oAuth login guard | ✅ | ❌ |
 | User Watched-items auto-exclusion | ✅ | ❌ |

@@ -66,7 +66,9 @@ app.use(cors({
       if (['localhost', '127.0.0.1', '::1'].includes(url.hostname)) {
         return callback(null, true);
       }
-    } catch {}
+    } catch {
+      // Not a parseable origin — fall through to the whitelist checks below.
+    }
 
     // Check env var whitelist
     if (ALLOWED_ORIGINS && ALLOWED_ORIGINS.includes(origin)) {

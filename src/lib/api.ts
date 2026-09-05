@@ -228,6 +228,19 @@ export const adminApi = {
       body: JSON.stringify({ settings }),
     }),
 
+  // Session creation password (stored separately from session_settings)
+  getCreatePasswordStatus: () =>
+    fetchApiAdminGet<{ isSet: boolean }>('/admin/create-password-status'),
+
+  setCreatePassword: (password: string) =>
+    fetchApiAdmin<{ success: boolean }>('/admin/set-create-password', {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    }),
+
+  clearCreatePassword: () =>
+    fetchApiAdmin<{ success: boolean }>('/admin/clear-create-password', { method: 'POST' }),
+
   uploadLogo: (file: File) => {
     const formData = new FormData();
     formData.append('logo', file);
@@ -271,7 +284,7 @@ export const adminApi = {
       range: { amount: number; unit: string; fromISO: string; toISO: string };
       kpis: { totalSessions: number; uniqueParticipants: number; avgParticipantsPerSession: number };
       activity: Array<{ bucketStartISO: string; count: number }>;
-      sessionTypes: { classic: number; timed: number; target: number };
+      sessionTypes: { classic: number; timed: number; target: number; timed_target: number };
       mediaTypes: Record<string, number>;
       participantDistribution: Record<string, number>;
       topParticipants: Array<{ name: string; count: number }>;
@@ -454,17 +467,25 @@ export const versionApi = {
 };
 
 export const sessionsApi = {
-  create: (data: { 
-    mediaType: string; 
-    displayName: string; 
-    isGuest: boolean; 
-    plexToken?: string; 
+  create: (data: {
+    mediaType: string;
+    displayName: string;
+    isGuest: boolean;
+    plexToken?: string;
     timedDuration?: number;
+    matchTarget?: number;
     useWatchlist?: boolean;
+    createPassword?: string;
   }) =>
     fetchApi<{ session: { id: string; code: string }; participant: { id: string } }>('/sessions/create', {
       method: 'POST',
       body: JSON.stringify(data),
+    }),
+
+  verifyCreatePassword: (password: string) =>
+    fetchApi<{ valid: boolean }>('/sessions/verify-create-password', {
+      method: 'POST',
+      body: JSON.stringify({ password }),
     }),
 
   getByCode: (code: string) =>
@@ -495,7 +516,16 @@ export const sessionsApi = {
     }),
 
   addVote: (sessionId: string, participantId: string, itemKey: string, vote: boolean) =>
-    fetchApi<{ success: boolean; voteId: string; match?: boolean; winnerItemKey?: string }>(`/sessions/${sessionId}/votes`, {
+    fetchApi<{
+      success: boolean;
+      voteId: string;
+      match?: boolean;
+      winnerItemKey?: string;
+      // Returned for match-target (and timed+target) sessions
+      matchCount?: number;
+      matchTargetReached?: boolean;
+      newMatch?: boolean;
+    }>(`/sessions/${sessionId}/votes`, {
       method: 'POST',
       body: JSON.stringify({ participantId, itemKey, vote }),
     }),

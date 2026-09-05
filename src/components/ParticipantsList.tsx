@@ -2,8 +2,14 @@ import { User, Crown, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Participant } from "@/types/session";
 
+// Only the fields this component actually reads, so callers holding a narrower
+// participant shape (e.g. the lobby) can pass theirs directly.
+type ParticipantSummary = Pick<Participant, 'id' | 'display_name' | 'is_guest'> & {
+  questions_completed?: boolean;
+};
+
 interface ParticipantsListProps {
-  participants: Participant[];
+  participants: ParticipantSummary[];
   hostId?: string;
   showStatus?: boolean;
   className?: string;

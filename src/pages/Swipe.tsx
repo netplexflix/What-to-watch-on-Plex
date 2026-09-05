@@ -1063,8 +1063,9 @@ const Swipe = () => {
   useEffect(() => {
     if (!sessionId || loading || waitingForQuestions || matchFound || hasNavigatedRef.current) return;
     
-    // Skip periodic match check for timed sessions
-    if (isTimedSessionRef.current) return;
+    // Skip periodic match check for purely timed sessions. A timed+target session still
+    // needs this as a backup for the "status became voting" transition.
+    if (isTimedSessionRef.current && !isMatchTargetSessionRef.current) return;
 
     const checkForMatch = async () => {
       if (hasNavigatedRef.current) return;
@@ -1219,11 +1220,10 @@ const Swipe = () => {
 
       // Handle running out of items
       if (nextIndex >= items.length) {
-        if (isTimedSessionRef.current) {
-          setWaitingForOthers(true);
-          // Don't navigate - wait for timer to expire
-        } else if (isMatchTargetSessionRef.current) {
-          // For match target sessions, if we run out of items, go to voting with whatever matches we have
+        if (isMatchTargetSessionRef.current) {
+          // For match target sessions, if we run out of items, go to voting with whatever matches we have.
+          // This takes precedence over the timer so a timed+target session doesn't idle
+          // until the clock runs out once everyone has swiped through the deck.
           console.log("[Swipe] Ran out of items in match target session, going to voting");
           setWaitingForOthers(true);
           
@@ -1256,9 +1256,12 @@ const Swipe = () => {
               }
             }
           }, 2000);
+        } else if (isTimedSessionRef.current) {
+          setWaitingForOthers(true);
+          // Don't navigate - wait for timer to expire
         } else {
           setWaitingForOthers(true);
-          
+
           setTimeout(async () => {
             if (hasNavigatedRef.current || matchFound) return;
             
@@ -1472,10 +1475,10 @@ const Swipe = () => {
         <Loader2 className="animate-spin text-primary mb-4" size={48} />
         <h1 className="text-2xl font-bold text-foreground mb-2">All Done!</h1>
         <p className="text-muted-foreground text-center">
-          {isTimedSession 
-            ? "Waiting for the timer to end..."
-            : isMatchTargetSession
-              ? "Waiting for others to finish swiping..."
+          {isTimedSession && isMatchTargetSession
+            ? "Waiting for the target to be hit or the timer to end..."
+            : isTimedSession
+              ? "Waiting for the timer to end..."
               : "Waiting for others to finish swiping..."}
         </p>
         <p className="text-sm text-muted-foreground mt-4">

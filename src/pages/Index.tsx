@@ -2,13 +2,14 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Plus, Users, Settings, Sparkles, LogIn, LogOut, Loader2, ShieldAlert } from "lucide-react";
+import { Plus, Users, Settings, Sparkles, LogIn, LogOut, Loader2, ShieldAlert, Lock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Logo } from "@/components/Logo";
-import { adminApi, plexApi } from "@/lib/api";
+import { adminApi, plexApi, sessionsApi } from "@/lib/api";
 import { clearUserIdentity, saveUserIdentity } from "@/lib/userStore";
 import { useAccessGate } from "@/hooks/useAccessGate";
+import { useCreateGate, saveCreatePassword } from "@/hooks/useCreateGate";
 import { usePlexOAuth } from "@/hooks/usePlexOAuth";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -21,8 +22,22 @@ const Index = () => {
   const [logoLoading, setLogoLoading] = useState(true);
 
   const { gated, verifying, hasAccess, refresh: refreshGate } = useAccessGate();
+  const {
+    requirePlex: createRequiresPlex,
+    requirePassword: createRequiresPassword,
+    plexOk: createPlexOk,
+    verifying: createGateVerifying,
+    refresh: refreshCreateGate,
+  } = useCreateGate();
   const [accessError, setAccessError] = useState<string | null>(null);
   const [verifyingAccess, setVerifyingAccess] = useState(false);
+
+  // Session creation gate UI state
+  const [showCreatePassword, setShowCreatePassword] = useState(false);
+  const [createPasswordInput, setCreatePasswordInput] = useState("");
+  const [createPasswordError, setCreatePasswordError] = useState<string | null>(null);
+  const [checkingCreatePassword, setCheckingCreatePassword] = useState(false);
+  const [createPlexError, setCreatePlexError] = useState<string | null>(null);
 
   const {
     isLoading: plexLoading,
@@ -45,17 +60,30 @@ const Index = () => {
         const { data } = await plexApi.verifyAccess(token);
         if (data?.hasAccess) {
           setAccessError(null);
+          setCreatePlexError(null);
           toast.success(`Signed in as ${user.username}!`);
-          await refreshGate();
+          await Promise.all([refreshGate(), refreshCreateGate()]);
         } else {
-          clearUserIdentity();
-          setAccessError(
-            "This Plex account does not have access to the host's Plex server."
-          );
+          const message =
+            "This Plex account does not have access to the host's Plex server.";
+          // Only drop the identity when the whole app is gated; otherwise the user can
+          // still join sessions as a guest.
+          if (gated) {
+            clearUserIdentity();
+            setAccessError(message);
+          } else {
+            setCreatePlexError(message);
+          }
+          await refreshCreateGate();
         }
       } catch (err) {
-        clearUserIdentity();
-        setAccessError("Could not verify Plex access. Please try again.");
+        const message = "Could not verify Plex access. Please try again.";
+        if (gated) {
+          clearUserIdentity();
+          setAccessError(message);
+        } else {
+          setCreatePlexError(message);
+        }
       } finally {
         setVerifyingAccess(false);
       }
@@ -82,8 +110,47 @@ const Index = () => {
     }
   };
 
+  // Creation may be restricted to verified Plex members and/or protected by a password.
+  // When both are enabled, both have to be satisfied.
   const handleCreateSession = () => {
+    setCreatePasswordError(null);
+
+    if (createRequiresPlex && !createPlexOk) {
+      setCreatePlexError(null);
+      startPlexLogin();
+      return;
+    }
+
+    if (createRequiresPassword) {
+      setShowJoinInput(false);
+      setShowCreatePassword(true);
+      return;
+    }
+
     navigate("/create");
+  };
+
+  const handleCreatePasswordSubmit = async () => {
+    if (!createPasswordInput.trim()) return;
+
+    setCheckingCreatePassword(true);
+    setCreatePasswordError(null);
+    try {
+      const { data, error } = await sessionsApi.verifyCreatePassword(createPasswordInput);
+      if (error) throw new Error(error);
+
+      if (data?.valid) {
+        saveCreatePassword(createPasswordInput);
+        navigate("/create");
+      } else {
+        setCreatePasswordError("Incorrect password.");
+      }
+    } catch (err) {
+      console.error("Error verifying session password:", err);
+      setCreatePasswordError("Could not verify the password. Please try again.");
+    } finally {
+      setCheckingCreatePassword(false);
+    }
   };
 
   const handleJoinSession = () => {
@@ -280,16 +347,91 @@ const Index = () => {
                 transition={{ delay: 0.4 }}
                 className="space-y-4"
               >
-                <Button
-                  onClick={handleCreateSession}
-                  disabled={verifying}
-                  className="w-full h-14 text-lg font-semibold bg-primary hover:bg-primary/90 text-primary-foreground glow-primary"
-                >
-                  <Plus className="mr-2" size={22} />
-                  Create Session
-                </Button>
+                {!showCreatePassword ? (
+                  <>
+                    <Button
+                      onClick={handleCreateSession}
+                      disabled={verifying || createGateVerifying || plexLoading || verifyingAccess}
+                      className="w-full h-14 text-lg font-semibold bg-primary hover:bg-primary/90 text-primary-foreground glow-primary"
+                    >
+                      {plexLoading || verifyingAccess ? (
+                        <Loader2 className="mr-2 animate-spin" size={22} />
+                      ) : createRequiresPlex && !createPlexOk ? (
+                        <LogIn className="mr-2" size={22} />
+                      ) : createRequiresPassword ? (
+                        <Lock className="mr-2" size={22} />
+                      ) : (
+                        <Plus className="mr-2" size={22} />
+                      )}
+                      {createRequiresPlex && !createPlexOk
+                        ? "Sign in with Plex to create"
+                        : "Create Session"}
+                    </Button>
 
-                {!showJoinInput ? (
+                    {createPlexError && (
+                      <motion.div
+                        initial={{ opacity: 0, y: -8 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="p-3 rounded-lg border border-destructive/40 bg-destructive/10 text-destructive text-sm flex items-start gap-2 text-left"
+                      >
+                        <ShieldAlert size={18} className="mt-0.5 shrink-0" />
+                        <span>{createPlexError}</span>
+                      </motion.div>
+                    )}
+                  </>
+                ) : (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    className="space-y-3"
+                  >
+                    <p className="text-sm text-muted-foreground">
+                      Creating a session requires a password.
+                    </p>
+                    <Input
+                      type="password"
+                      value={createPasswordInput}
+                      onChange={(e) => {
+                        setCreatePasswordInput(e.target.value);
+                        setCreatePasswordError(null);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") handleCreatePasswordSubmit();
+                      }}
+                      placeholder="Session password"
+                      className="h-14 text-center text-lg bg-secondary border-secondary text-foreground placeholder:text-muted-foreground"
+                    />
+                    {createPasswordError && (
+                      <p className="text-sm text-destructive">{createPasswordError}</p>
+                    )}
+                    <div className="flex gap-3">
+                      <Button
+                        onClick={() => {
+                          setShowCreatePassword(false);
+                          setCreatePasswordInput("");
+                          setCreatePasswordError(null);
+                        }}
+                        variant="outline"
+                        className="flex-1 h-12 border-secondary text-muted-foreground hover:bg-secondary"
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        onClick={handleCreatePasswordSubmit}
+                        disabled={!createPasswordInput.trim() || checkingCreatePassword}
+                        className="flex-1 h-12 bg-primary hover:bg-primary/90 text-primary-foreground"
+                      >
+                        {checkingCreatePassword ? (
+                          <Loader2 className="animate-spin" size={18} />
+                        ) : (
+                          "Continue"
+                        )}
+                      </Button>
+                    </div>
+                  </motion.div>
+                )}
+
+                {showCreatePassword ? null : !showJoinInput ? (
                   <Button
                     onClick={() => setShowJoinInput(true)}
                     disabled={verifying}

@@ -61,7 +61,9 @@ const TimedResults = () => {
   // Trailers appear on the voting cards in both 'on' and 'voting' modes.
   const [enableTrailers, setEnableTrailers] = useState(false);
   const [isMatchTargetSession, setIsMatchTargetSession] = useState(false);
-  
+  const [isTimedSession, setIsTimedSession] = useState(false);
+  const [matchTarget, setMatchTarget] = useState(0);
+
   // Warm trailer availability for the voting cards so the button appears without delay.
   useEffect(() => {
     if (!enableTrailers) return;
@@ -182,6 +184,12 @@ const TimedResults = () => {
         // Detect if this is a match target session
         if (session.match_target && session.match_target > 0) {
           setIsMatchTargetSession(true);
+          setMatchTarget(session.match_target);
+        }
+
+        // Detect if this is a timed session (both can be true for timed+target)
+        if (session.timed_duration && session.timed_duration > 0) {
+          setIsTimedSession(true);
         }
 
         let mediaItems: any[] = [];
@@ -214,8 +222,8 @@ const TimedResults = () => {
           console.warn('[TimedResults] WebSocket connection failed:', wsError);
         }
 
-        let loadedMatches: PlexItem[] = [];
-        let loadedTopLiked: { item: PlexItem; likeCount: number }[] = [];
+        const loadedMatches: PlexItem[] = [];
+        const loadedTopLiked: { item: PlexItem; likeCount: number }[] = [];
         
         try {
           const matchesResult = await sessionsApi.getMatches(session.id);
@@ -513,6 +521,15 @@ const TimedResults = () => {
   const itemsToShow = matches.length > 0 ? matches : topLiked.map(t => t.item);
   const isMatchMode = matches.length > 0;
 
+  // A timed+target session can end either way, so report what actually happened.
+  const targetWasReached =
+    isMatchTargetSession && matchTarget > 0 && matches.length >= matchTarget;
+  const endReasonHeading = isTimedSession && !targetWasReached
+    ? "Time's Up! 🎉"
+    : isMatchTargetSession
+      ? "Target Reached! 🎯"
+      : "Time's Up! 🎉";
+
   if (itemsToShow.length === 0) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-background px-6">
@@ -546,9 +563,7 @@ const TimedResults = () => {
           className="text-center mb-4"
         >
           <h1 className="text-xl font-bold text-foreground mb-1">
-            {isMatchMode 
-              ? (isMatchTargetSession ? "Target Reached! 🎯" : "Time's Up! 🎉")
-              : "Session Complete"}
+            {isMatchMode ? endReasonHeading : "Session Complete"}
           </h1>
           <p className="text-sm text-muted-foreground">
             {isMatchMode 

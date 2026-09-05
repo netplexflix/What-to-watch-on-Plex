@@ -2606,13 +2606,17 @@ router.get('/last-cache-refresh', (req, res) => {
     if (manualRefreshRow?.value) {
       try {
         lastManualRefresh = JSON.parse(manualRefreshRow.value);
-      } catch (e) {}
+      } catch (e) {
+        // Malformed row — treat as "never refreshed".
+      }
     }
     
     if (autoRefreshRow?.value) {
       try {
         lastAutoRefresh = JSON.parse(autoRefreshRow.value);
-      } catch (e) {}
+      } catch (e) {
+        // Malformed row — treat as "never refreshed".
+      }
     }
     
     let lastRefresh = null;

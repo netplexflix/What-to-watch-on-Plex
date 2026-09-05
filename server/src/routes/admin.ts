@@ -349,6 +349,10 @@ router.post('/get-session-settings', (req, res) => {
           auto_cache_refresh: settings.auto_cache_refresh,
           hard_filter_preferences: settings.hard_filter_preferences,
           require_plex_member: settings.require_plex_member,
+          // Session creation restrictions (the password hash itself lives in its own
+          // app_config key, never in this publicly readable blob).
+          restrict_create_plex: settings.restrict_create_plex,
+          restrict_create_password: settings.restrict_create_password,
           // 'off' | 'on' | 'voting'. enable_trailers kept for migration of old configs.
           trailers_mode: settings.trailers_mode,
           enable_trailers: settings.enable_trailers,
@@ -437,6 +441,63 @@ router.post('/save-session-settings', requireAdmin, (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error('[Admin] Error saving session settings:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ============ SESSION CREATION PASSWORD ============
+// Stored under its own app_config key rather than inside `session_settings`, because
+// /save-session-settings replaces that whole blob with whatever the client posts.
+
+// Check whether a session creation password is set
+router.get('/create-password-status', requireAdmin, (req, res) => {
+  try {
+    const db = getDb();
+    const row = db.prepare('SELECT value FROM app_config WHERE key = ?').get('create_session_password') as { value: string } | undefined;
+
+    if (row) {
+      const config = JSON.parse(row.value);
+      res.json({ isSet: !!config.hash });
+    } else {
+      res.json({ isSet: false });
+    }
+  } catch (error) {
+    console.error('[Admin] Error checking create password status:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Set (or change) the session creation password
+router.post('/set-create-password', requireAdmin, (req, res) => {
+  try {
+    const { password } = req.body;
+    if (!password || typeof password !== 'string' || password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+
+    const db = getDb();
+    const hash = hashPasswordServer(password);
+    db.prepare(`
+      INSERT INTO app_config (key, value, updated_at)
+      VALUES (?, ?, datetime('now'))
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+    `).run('create_session_password', JSON.stringify({ hash, version: 2 }));
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[Admin] Error setting create password:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Clear the session creation password
+router.post('/clear-create-password', requireAdmin, (req, res) => {
+  try {
+    const db = getDb();
+    db.prepare('DELETE FROM app_config WHERE key = ?').run('create_session_password');
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[Admin] Error clearing create password:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -753,7 +814,7 @@ router.get('/stats', requireAdmin, (req, res) => {
       activity.push({ bucketStartISO: addUnits(firstBucket, i, unit).toISOString(), count: 0 });
     }
 
-    const sessionTypes = { classic: 0, timed: 0, target: 0 };
+    const sessionTypes = { classic: 0, timed: 0, target: 0, timed_target: 0 };
     const mediaTypes: Record<string, number> = {};
     const participantCounts = new Map<string, number>();
     const participantDistribution = new Map<number, number>();
@@ -781,7 +842,8 @@ router.get('/stats', requireAdmin, (req, res) => {
       if (idx >= 0 && idx < activity.length) activity[idx].count += 1;
 
       // Session type (with legacy fallback)
-      if (row.session_type === 'target') sessionTypes.target += 1;
+      if (row.session_type === 'timed_target') sessionTypes.timed_target += 1;
+      else if (row.session_type === 'target') sessionTypes.target += 1;
       else if (row.session_type === 'timed' || (!row.session_type && row.was_timed)) sessionTypes.timed += 1;
       else sessionTypes.classic += 1;
 

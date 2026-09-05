@@ -11,6 +11,8 @@
     "build:server": "cd server && npm run build",
     "build:all": "npm run build && npm run build:server",
     "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.app.json --noEmit",
+    "check": "npm run typecheck && npm run lint",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest"
