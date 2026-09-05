@@ -431,12 +431,28 @@ router.post('/save-session-settings', requireAdmin, (req, res) => {
     }
 
     const db = getDb();
+    const existingRow = db.prepare('SELECT value FROM app_config WHERE key = ?').get('session_settings') as { value: string } | undefined;
+
+    let existing: Record<string, unknown> = {};
+    if (existingRow) {
+      try {
+        existing = JSON.parse(existingRow.value);
+      } catch {
+        // Corrupt blob — start fresh rather than refusing the save.
+      }
+    }
+
+    // Shallow merge: admin tabs each post only the subset of settings they own, so a
+    // client that doesn't know about a field must not delete it. Keys the client sends
+    // explicitly (including `false`) still win; only omitted keys are preserved.
+    const merged = { ...existing, ...settings };
+
     const stmt = db.prepare(`
-      INSERT INTO app_config (key, value, updated_at) 
+      INSERT INTO app_config (key, value, updated_at)
       VALUES (?, ?, datetime('now'))
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
     `);
-    stmt.run('session_settings', JSON.stringify(settings));
+    stmt.run('session_settings', JSON.stringify(merged));
 
     res.json({ success: true });
   } catch (error) {

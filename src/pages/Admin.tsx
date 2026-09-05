@@ -308,14 +308,9 @@ const Admin = () => {
     setAutoCacheRefresh(enabled);
     
     try {
-      const { data: currentData } = await adminApi.getSessionSettings();
-      const currentSettings = currentData?.settings || {};
-      
-      const { error } = await adminApi.saveSessionSettings({
-        ...currentSettings,
-        auto_cache_refresh: enabled,
-      });
-      
+      // The server merges partial settings saves, so post just the field we own.
+      const { error } = await adminApi.saveSessionSettings({ auto_cache_refresh: enabled });
+
       if (error) throw new Error(error);
       
       toast.success(enabled ? "Auto cache refresh enabled" : "Auto cache refresh disabled");

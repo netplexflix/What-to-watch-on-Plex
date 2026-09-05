@@ -10,6 +10,9 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useHaptics } from "@/hooks/useHaptics";
 
+// Only the subset of session settings this tab owns — other fields (e.g. the Connection
+// tab's auto_cache_refresh) are deliberately absent. /save-session-settings merges
+// partial saves server-side, so posting this object never deletes those other fields.
 interface SessionSettings {
   suggestion_order: "random" | "fixed";
   max_choices: number;
