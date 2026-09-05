@@ -13,8 +13,11 @@ import { createRateLimiter, verifyPasswordServer } from '../middleware/auth.js';
 // Keep in sync with ABSTAIN_ITEM_KEY in src/types/session.ts.
 const ABSTAIN_ITEM_KEY = '__no_preference__';
 
-// The voting page shows at most this many posters, so an all-abstain roulette spins over the same set.
-const VOTING_CANDIDATE_LIMIT = 6;
+// Without any full matches the voting page falls back to the most-liked items and shows at most this
+// many. Full matches are never capped (a match target above six promises that many candidates), so an
+// all-abstain roulette spins over exactly the posters that were on screen.
+// Keep in sync with TOP_LIKED_LIMIT in src/pages/TimedResults.tsx.
+const TOP_LIKED_LIMIT = 6;
 
 function getSessionSettings(db: any): any {
   const row = db.prepare('SELECT value FROM app_config WHERE key = ?').get('session_settings') as { value: string } | undefined;
@@ -883,10 +886,10 @@ function getSessionMatches(db: any, sessionId: string): {
 }
 
 // The items actually on screen during voting - mirrors the client's choice of list and its cap.
-function getVotingCandidateKeys(db: any, sessionId: string, limit = VOTING_CANDIDATE_LIMIT): string[] {
+function getVotingCandidateKeys(db: any, sessionId: string): string[] {
   const { matches, topLiked } = getSessionMatches(db, sessionId);
-  const keys = matches.length > 0 ? matches : topLiked.map(t => t.itemKey);
-  return keys.slice(0, limit);
+  if (matches.length > 0) return matches;
+  return topLiked.slice(0, TOP_LIKED_LIMIT).map(t => t.itemKey);
 }
 
 // Get matches for timed/match-target session

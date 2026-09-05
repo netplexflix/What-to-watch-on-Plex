@@ -359,7 +359,11 @@ router.post('/get-collections', async (req, res) => {
     }
     
     const { libraryKeys, mediaType } = req.body;
-    const selectedLibraries = libraryKeys || config.libraries || [];
+    // Fall back to the configured libraries when the caller sends none. An empty array counts as
+    // "none" too - `[] || x` would keep the empty array and yield no collections at all.
+    const selectedLibraries: string[] = Array.isArray(libraryKeys) && libraryKeys.length > 0
+      ? libraryKeys
+      : (config.libraries || []);
     const sortedLibraryKeys = [...selectedLibraries].sort().join(',');
     const cacheKey = `${sortedLibraryKeys}:${mediaType || 'all'}`;
     
@@ -2568,6 +2572,14 @@ function applyFilters(items: any[], filters: any): any[] {
       if (filters.languages?.length > 0 && itemLanguages.length > 0) {
         if (!languagesMatch(itemLanguages, filters.languages)) return false;
       }
+
+      // Unrated items pass, like items without a year skip the era check.
+      if (filters.minRatings?.length > 0) {
+        const mode: RatingDisplay = filters.ratingDisplay || 'critic';
+        if (effectiveRatings(item, mode).length > 0 && countMetMinRatings(item, filters.minRatings, mode) === 0) {
+          return false;
+        }
+      }
     }
 
     return true;
@@ -2604,6 +2616,38 @@ function matchesEra(year: number, era: string): boolean {
     case 'classic': return year < 1980;
     default: return false;
   }
+}
+
+// Minimum-rating preference. Keep in sync with src/lib/ratingFilter.ts, which runs on the
+// normal (cached) path; this copy only runs on a cache miss.
+type RatingDisplay = 'critic' | 'audience' | 'both';
+type RatedItem = { rating?: number; audienceRating?: number };
+
+// The cards test ratings for truthiness, so 0 counts as "no rating" here too.
+const ratingPresent = (value: number | undefined): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && value > 0;
+
+// Exactly the numbers the detail cards render for this display mode: the selected
+// source(s) when present, otherwise whichever exists (critic first). Empty when unrated.
+function effectiveRatings(item: RatedItem, mode: RatingDisplay): number[] {
+  const ratings: number[] = [];
+  if ((mode === 'critic' || mode === 'both') && ratingPresent(item.rating)) ratings.push(item.rating);
+  if ((mode === 'audience' || mode === 'both') && ratingPresent(item.audienceRating)) {
+    ratings.push(item.audienceRating);
+  }
+  if (ratings.length > 0) return ratings;
+  if (ratingPresent(item.rating)) return [item.rating];
+  if (ratingPresent(item.audienceRating)) return [item.audienceRating];
+  return [];
+}
+
+// How many of the group's thresholds this item clears (0 when unrated). Inclusive.
+function countMetMinRatings(item: RatedItem, minRatings: number[], mode: RatingDisplay): number {
+  if (minRatings.length === 0) return 0;
+  const ratings = effectiveRatings(item, mode);
+  if (ratings.length === 0) return 0;
+  const best = Math.max(...ratings);
+  return minRatings.filter((threshold) => best >= threshold).length;
 }
 
 // Short-lived cache for per-user watched lookups

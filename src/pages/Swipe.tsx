@@ -11,6 +11,12 @@ import { wsClient } from "@/lib/websocket";
 import { getLocalSession } from "@/lib/sessionStore";
 import { prefetchImages } from "@/lib/imagePrefetch";
 import { prefetchTrailers } from "@/lib/trailerCache";
+import {
+  aggregateMinRatings,
+  countMetMinRatings,
+  effectiveRatings,
+  type RatingDisplay,
+} from "@/lib/ratingFilter";
 import { toast } from "sonner";
 import { useHaptics } from "@/hooks/useHaptics";
 import type { PlexItem, Participant } from "@/types/session";
@@ -223,6 +229,8 @@ function scoreItem(item: any, filters: any, boosted: boolean = false): number {
   const rtPer = boosted ? 100 : 25;
   const langBase = boosted ? 200 : 35;
   const langPer = boosted ? 100 : 40;
+  const ratingBase = boosted ? 200 : 25;
+  const ratingPer = boosted ? 100 : 25;
 
   if (filters.genres?.length > 0 && itemGenres.length > 0) {
     const genreMatches = countMatchingGenres(itemGenres, filters.genres);
@@ -249,6 +257,14 @@ function scoreItem(item: any, filters: any, boosted: boolean = false): number {
     const langMatches = countMatchingLanguages(itemLanguages, filters.languages);
     if (langMatches > 0) {
       score += langBase + (langMatches * langPer);
+    }
+  }
+
+  // Titles that clear more of the group's minimum ratings surface first (unrated = 0).
+  if (filters.minRatings?.length > 0) {
+    const ratingMatches = countMetMinRatings(item, filters.minRatings, filters.ratingDisplay || 'critic');
+    if (ratingMatches > 0) {
+      score += ratingBase + (ratingMatches * ratingPer);
     }
   }
 
@@ -512,6 +528,8 @@ const Swipe = () => {
       excludedRuntimes: [...new Set(allExcludedRuntimes)],
       languages: finalLanguages,
       excludedLanguages: [...new Set(allExcludedLanguages)],
+      // Union like the others: the lowest threshold decides what shows, the rest order it.
+      minRatings: aggregateMinRatings(participantsList),
     };
   }, []);
 
@@ -549,10 +567,13 @@ const Swipe = () => {
       let currentLabelRestrictions = labelRestrictionsRef.current;
       let hardFilterPreferences = true;
       let filterWatchedItems = true;
+      // Local copy for the filters below; the state setter can't be read back synchronously.
+      let ratingDisplayMode: RatingDisplay = 'critic';
       try {
         const { data: settingsData } = await adminApi.getSessionSettings();
         if (settingsData?.settings) {
-          setRatingDisplay(settingsData.settings.rating_display || 'critic');
+          ratingDisplayMode = settingsData.settings.rating_display || 'critic';
+          setRatingDisplay(ratingDisplayMode);
           // Trailers on the swiping page only in 'on' mode (not 'voting' or 'off').
           // Fall back to the legacy enable_trailers boolean for un-migrated configs.
           const trailersMode = settingsData.settings.trailers_mode ?? (settingsData.settings.enable_trailers ? 'on' : 'off');
@@ -616,7 +637,7 @@ const Swipe = () => {
           setLoadingMessage("Fetching media from Plex...");
           const { data: mediaData, error: mediaError } = await plexApi.getMedia(
             mediaType || 'both',
-            { ...aggregatedFilters, hardFilterPreferences }
+            { ...aggregatedFilters, hardFilterPreferences, ratingDisplay: ratingDisplayMode }
           );
           if (!mediaData) {
             throw new MediaLoadError(mediaError);
@@ -720,7 +741,8 @@ const Swipe = () => {
         (aggregatedFilters.genres?.length > 0) ||
         (aggregatedFilters.eras?.length > 0) ||
         (aggregatedFilters.runtimes?.length > 0) ||
-        (aggregatedFilters.languages?.length > 0)
+        (aggregatedFilters.languages?.length > 0) ||
+        (aggregatedFilters.minRatings?.length > 0)
       );
 
       if (hardFilterPreferences && hasPreferences) {
@@ -755,6 +777,13 @@ const Swipe = () => {
             }
           }
 
+          // Unrated items pass, the same way items without a year skip the era check.
+          if (aggregatedFilters.minRatings.length > 0 && effectiveRatings(item, ratingDisplayMode).length > 0) {
+            if (countMetMinRatings(item, aggregatedFilters.minRatings, ratingDisplayMode) === 0) {
+              return false;
+            }
+          }
+
           return true;
         });
         console.log(`[Swipe] After preference filters: ${fetchedItems.length} items (removed ${beforeCount - fetchedItems.length})`);
@@ -780,7 +809,9 @@ const Swipe = () => {
         studio: item.studio,
         audienceRating: item.audienceRating,
         languages: item.languages || [],
-        _score: hasPreferences ? scoreItem(item, aggregatedFilters, !hardFilterPreferences) : 0,
+        _score: hasPreferences
+          ? scoreItem(item, { ...aggregatedFilters, ratingDisplay: ratingDisplayMode }, !hardFilterPreferences)
+          : 0,
       }));
 
       let orderedItems: (PlexItem & { _score: number })[];

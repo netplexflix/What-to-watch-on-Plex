@@ -346,7 +346,8 @@ router.post('/get-session-settings', (req, res) => {
           rating_display: settings.rating_display,
           enable_lobby_qr: settings.enable_lobby_qr,
           auto_cache_refresh: settings.auto_cache_refresh,
-          // { genre: bool, era: bool, language: bool } — a missing key reads as enabled.
+          // { genre, era, runtime, language, rating: bool } — a missing key reads as that
+          // stage's default (see DEFAULT_QUESTION_STAGE_SETTINGS in src/lib/questionStages.ts).
           question_stages: settings.question_stages,
           hard_filter_preferences: settings.hard_filter_preferences,
           filter_watched_items: settings.filter_watched_items,

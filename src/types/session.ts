@@ -28,6 +28,8 @@ export interface SessionPreferences {
   excludedRuntimes?: string[];
   languages?: string[];
   excludedLanguages?: string[];
+  /** Single-select "Minimum Rating" stage. Absent when the stage is off or answered "I don't mind". */
+  minRating?: number;
   selectedCollections?: string[];
 }
 

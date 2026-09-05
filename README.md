@@ -28,7 +28,7 @@ Main Features:
 - Optionally filter suggestions by `Collections`.<br> Want to decide on which Christmas movie to watch? Select your Christmas collection and start a session!
 - Optionally start a session from your `watchlist` items.
 - Include or Exclude items based on `Labels`.
-- Users optionally set preferences for `Genre`, `Era`, `Duration` and `Language` to narrow down the suggestions. Tap once to prefer, twice to exclude.
+- Users optionally set preferences for `Genre`, `Era`, `Duration`, `Language` and `Minimum Rating` to narrow down the suggestions. Tap once to prefer, twice to exclude.
 - Flip cards over for details, Swipe left for Nope and right for Yes.
 - Optionally watch `Trailers` streamed straight from your Plex server.
 - Use your own `custom logo` on the landing page.
@@ -100,7 +100,8 @@ Equivalent to the `CORS_ORIGINS` environment variable, but managed at runtime wi
 > [!NOTE]
 > `Preferences` are seen just that. If user1 sets preference for `comedy` and user2 sets preference for `action` then the app will first try to find items with both genres, and otherwise suggests a mix of both.<br>
 > `Exclusions` are seen as hard limits. If a user marks `horror` in red, then no horror will be suggested at all.
-- **Question Stages:** Enable or disable the questions individually. A disabled question is treated as if everyone answered "I don't mind", so it simply doesn't narrow the suggestions. Disabling all three skips the questionnaire entirely and takes users straight from the lobby to swiping.
+- **Question Stages:** Enable or disable the questions individually. A disabled question is treated as if everyone answered "I don't mind", so it simply doesn't narrow the suggestions. Disabling all of them skips the questionnaire entirely and takes users straight from the lobby to swiping.
+- **Minimum Rating question:** When enabled, users pick a minimum rating (`6+` to `8.5+`) after the language question. It is compared against the rating source chosen in `Rating Display` (in `Both` mode an item passes if either rating qualifies). Unrated items are not removed.
 - **Suggestion Order:**
   - `Random` (suggestions appear randomly for each user).
   - `Fixed` (everyone gets the same suggestions in the same order).
@@ -108,7 +109,7 @@ Equivalent to the `CORS_ORIGINS` environment variable, but managed at runtime wi
 - **Collections:** Enable a collection picker for the host when creating a session. Only items from selected collections will be suggested.
 - **Open in Plex Button:** Enables a button on the match winner page to open the item in Plex. Only works by opening Plex in a browser tab.
 - **Lobby QR Code:** Display a QR code in the lobby for easy session joining.
-- **Rating Display:** Choose whether detail cards show `Critic Rating`, `Audience Rating`or `both`.
+- **Rating Display:** Choose whether detail cards show `Critic Rating`, `Audience Rating` or `both`. The same choice decides which rating the `Minimum Rating` question compares against.
 - **Trailers:** Add a `Watch Trailer` button to cards. Trailers are streamed from your Plex server. Three modes:
   - `Off` (default): no trailer button.
   - `On`: trailer button on detail cards
@@ -139,10 +140,9 @@ The current version of Swiparr meanwhile *does* support Plex as well, but not al
 | Trailer playback | ✅ | ❌ |
 | Plex oAuth login guard | ✅ | ❌ |
 | User Watched-items auto-exclusion | ✅ | ❌ |
-| Group preference questionnaire filters (genre/era/language) | ✅ | ❌ |
+| Group preference questionnaire filters (genre/era/runtime/language/minimum rating) | ✅ | ❌ |
 | Plex Label filters | ✅ | ❌ |
 | Streaming-availability ("where to watch") filter | ❌ | ✅ |
-| Runtime & minimum-rating filters | ❌ | ✅ |
 | Sort by Trending / Popular | ❌ | ✅ |
 | Customizable (logo + PWA name and icon) | ✅ | ❌ |
 | Suggest from Watchlist and/or Collections | ✅ | ❌ |

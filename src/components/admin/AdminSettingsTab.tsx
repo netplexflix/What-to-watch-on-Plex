@@ -206,7 +206,8 @@ export const AdminSettingsTab = () => {
           restrict_create_password: data.settings.restrict_create_password ?? false,
           // Migrate the old boolean enable_trailers -> trailers_mode when needed.
           trailers_mode: data.settings.trailers_mode ?? (data.settings.enable_trailers ? "on" : "off"),
-          // Absent stage keys read as enabled, so pre-existing configs keep all stages.
+          // Absent stage keys read as each stage's default (the original four on, later
+          // additions off), so pre-existing configs behave exactly as before.
           question_stages: QUESTION_STAGES.reduce((acc, stage) => {
             acc[stage.id] = isStageEnabled(data.settings.question_stages, stage.id);
             return acc;
@@ -1076,7 +1077,8 @@ export const AdminSettingsTab = () => {
           <h2 className="font-semibold text-foreground">Rating Display</h2>
         </div>
         <p className="text-sm text-muted-foreground">
-          Choose which ratings to show on card details
+          Choose which ratings to show on card details. Also decides which rating the
+          Minimum Rating question compares against.
         </p>
         
         <div className="grid grid-cols-3 gap-2">

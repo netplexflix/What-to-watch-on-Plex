@@ -49,6 +49,17 @@ const transformToPlexItem = (item: any): PlexItem => ({
 
 type PageState = 'loading' | 'voting' | 'waiting' | 'roulette' | 'winner' | 'error';
 
+// Without any full matches the vote falls back to the most-liked items, and only this many are shown.
+// Full matches are never capped - a match target above six promises that many candidates.
+// Keep in sync with TOP_LIKED_LIMIT in server/src/routes/sessions.ts.
+const TOP_LIKED_LIMIT = 6;
+
+const getVotingItems = (
+  matches: PlexItem[],
+  topLiked: { item: PlexItem; likeCount: number }[]
+): PlexItem[] =>
+  matches.length > 0 ? matches : topLiked.slice(0, TOP_LIKED_LIMIT).map((t) => t.item);
+
 const TimedResults = () => {
   const navigate = useNavigate();
   const { code } = useParams<{ code: string }>();
@@ -80,8 +91,7 @@ const TimedResults = () => {
   // Warm trailer availability for the voting cards so the button appears without delay.
   useEffect(() => {
     if (!enableTrailers) return;
-    const items = matches.length > 0 ? matches : topLiked.map((t) => t.item);
-    prefetchTrailers(items.slice(0, 6).map((i) => i.ratingKey));
+    prefetchTrailers(getVotingItems(matches, topLiked).map((i) => i.ratingKey));
   }, [enableTrailers, matches, topLiked]);
 
   const mediaMapRef = useRef<Map<string, any>>(new Map());
@@ -571,7 +581,7 @@ const TimedResults = () => {
     );
   }
 
-  const itemsToShow = matches.length > 0 ? matches : topLiked.map(t => t.item);
+  const itemsToShow = getVotingItems(matches, topLiked);
   const isMatchMode = matches.length > 0;
 
   // A timed+target session can end either way, so report what actually happened.
@@ -642,7 +652,7 @@ const TimedResults = () => {
         </div>
 
         <div className="grid grid-cols-2 gap-3 mb-4 max-w-sm mx-auto w-full flex-1 content-start">
-          {itemsToShow.slice(0, 6).map((item, index) => (
+          {itemsToShow.map((item, index) => (
             <FlippableCard
               key={item.ratingKey}
               item={item}

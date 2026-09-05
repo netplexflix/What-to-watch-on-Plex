@@ -11,6 +11,7 @@ import {
   ERAS,
   GENRES,
   RUNTIMES,
+  RATING_THRESHOLDS,
   QUESTION_STAGES,
   getEnabledStages,
   isStageEnabled,
@@ -31,20 +32,17 @@ interface QuestionFlowProps {
 
 type TriStateMap = Record<string, SelectionState>;
 
-const emptyStates = (): Record<QuestionStageId, TriStateMap> => ({
-  genre: {},
-  era: {},
-  runtime: {},
-  language: {},
-});
+// One entry per registered stage, so adding a stage never needs a new literal here.
+const stageRecord = <T,>(make: () => T): Record<QuestionStageId, T> =>
+  Object.fromEntries(QUESTION_STAGES.map((stage) => [stage.id, make()])) as Record<
+    QuestionStageId,
+    T
+  >;
+
+const emptyStates = () => stageRecord<TriStateMap>(() => ({}));
 
 // Every stage starts as "I don't mind", so Continue is enabled from the first paint.
-const allDontMind = (): Record<QuestionStageId, boolean> => ({
-  genre: true,
-  era: true,
-  runtime: true,
-  language: true,
-});
+const allDontMind = () => stageRecord(() => true);
 
 export const QuestionFlow = ({
   onComplete,
@@ -119,6 +117,8 @@ export const QuestionFlow = ({
         return { options: ERAS, loading: false, emptyMessage: null };
       case "runtime":
         return { options: RUNTIMES, loading: false, emptyMessage: null };
+      case "rating":
+        return { options: RATING_THRESHOLDS, loading: false, emptyMessage: null };
       case "language":
         return {
           options: availableLanguages.map((l) => ({ value: l, label: l })),
@@ -141,18 +141,27 @@ export const QuestionFlow = ({
     }
 
     // Build over every stage, not just the enabled ones: a disabled stage never leaves
-    // dontMind === true, so it contributes empty arrays — which the aggregation in
-    // Swipe.tsx already treats as "no preference". This also keeps the submitted
-    // payload the same shape regardless of which stages are switched on.
+    // dontMind === true, so tri-state stages contribute empty arrays — which the
+    // aggregation in Swipe.tsx already treats as "no preference" — and single-choice
+    // stages contribute no key at all.
     const preferences: SessionPreferences = {};
     for (const stage of QUESTION_STAGES) {
       const stageStates = dontMind[stage.id] ? {} : states[stage.id];
-      preferences[stage.prefKey] = Object.entries(stageStates)
-        .filter(([, state]) => state === true)
-        .map(([value]) => value);
-      preferences[stage.excludeKey] = Object.entries(stageStates)
-        .filter(([, state]) => state === false)
-        .map(([value]) => value);
+      switch (stage.kind) {
+        case "tristate":
+          preferences[stage.prefKey] = Object.entries(stageStates)
+            .filter(([, state]) => state === true)
+            .map(([value]) => value);
+          preferences[stage.excludeKey] = Object.entries(stageStates)
+            .filter(([, state]) => state === false)
+            .map(([value]) => value);
+          break;
+        case "single": {
+          const selected = Object.entries(stageStates).find(([, state]) => state === true)?.[0];
+          if (selected !== undefined) preferences[stage.valueKey] = Number(selected);
+          break;
+        }
+      }
     }
 
     onComplete(preferences);
@@ -181,10 +190,26 @@ export const QuestionFlow = ({
     setStates((prev) => ({ ...prev, [stageId]: {} }));
   };
 
-  // undefined -> prefer -> exclude -> undefined, with the configured limits applied.
-  const handleToggle = (stageId: QuestionStageId, key: string) => {
+  const handleToggle = (stage: QuestionStageDef, key: string) => {
+    const stageId = stage.id;
     const stageStates = states[stageId];
     const currentState = stageStates[key];
+
+    // Single-choice stages: tap to select, tap the selection again to return to "I don't
+    // mind". Never leave dontMind off with nothing selected, or Continue would lock up.
+    // The selection limits don't apply — there is only ever one pick.
+    if (stage.kind === "single") {
+      if (currentState === true) {
+        handleDontMind(stageId);
+        return;
+      }
+      haptics.selection();
+      setDontMind((prev) => ({ ...prev, [stageId]: false }));
+      setStates((prev) => ({ ...prev, [stageId]: { [key]: true } }));
+      return;
+    }
+
+    // Tri-state: undefined -> prefer -> exclude -> undefined, with the configured limits applied.
     const choiceCount = countSelections(stageStates, "choices");
     const exclusionCount = countSelections(stageStates, "exclusions");
 
@@ -248,20 +273,26 @@ export const QuestionFlow = ({
           transition={{ duration: 0.3 }}
         >
           <h2 className="text-2xl font-bold text-foreground mb-2">{currentStage.question}</h2>
-          <p className="text-sm text-muted-foreground mb-4">{currentStage.subtext}</p>
+          <p className="text-sm text-muted-foreground mb-4">
+            {typeof currentStage.subtext === "function"
+              ? currentStage.subtext(settings)
+              : currentStage.subtext}
+          </p>
 
-          {/* Selection limits info */}
-          <div className="flex items-center gap-2 mb-6 p-3 rounded-lg bg-secondary/50">
-            <Info size={16} className="text-muted-foreground flex-shrink-0" />
-            <p className="text-xs text-muted-foreground">
-              You can select up to <span className="font-semibold text-primary">{settings.max_choices} preferences</span> and <span className="font-semibold text-destructive">{settings.max_exclusions} exclusions</span>
-              {currentCounts.choices > 0 || currentCounts.exclusions > 0 ? (
-                <span className="ml-1">
-                  (currently: {currentCounts.choices}/{settings.max_choices} preferred, {currentCounts.exclusions}/{settings.max_exclusions} excluded)
-                </span>
-              ) : null}
-            </p>
-          </div>
+          {/* Selection limits info (single-choice stages have no limits to explain) */}
+          {currentStage.kind === "tristate" && (
+            <div className="flex items-center gap-2 mb-6 p-3 rounded-lg bg-secondary/50">
+              <Info size={16} className="text-muted-foreground flex-shrink-0" />
+              <p className="text-xs text-muted-foreground">
+                You can select up to <span className="font-semibold text-primary">{settings.max_choices} preferences</span> and <span className="font-semibold text-destructive">{settings.max_exclusions} exclusions</span>
+                {currentCounts.choices > 0 || currentCounts.exclusions > 0 ? (
+                  <span className="ml-1">
+                    (currently: {currentCounts.choices}/{settings.max_choices} preferred, {currentCounts.exclusions}/{settings.max_exclusions} excluded)
+                  </span>
+                ) : null}
+              </p>
+            </div>
+          )}
 
           {currentOptions.loading ? (
             <div className="text-center py-8">
@@ -317,7 +348,7 @@ export const QuestionFlow = ({
                       key={option.value}
                       label={option.label}
                       state={state}
-                      onToggle={() => handleToggle(currentStage.id, option.value)}
+                      onToggle={() => handleToggle(currentStage, option.value)}
                       variant={currentStage.layout === "grid" ? "card" : "chip"}
                       size={currentStage.layout === "grid" ? "sm" : "default"}
                       icon={

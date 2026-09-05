@@ -6,7 +6,7 @@
 // it holds. So a tab must type its state as `Pick<SessionSettings, ...>` of exactly the
 // keys it owns — typing it as the full SessionSettings would make it post keys owned by
 // another tab (e.g. auto_cache_refresh) and clobber them.
-import type { QuestionStageId } from "@/lib/questionStages";
+import { DEFAULT_QUESTION_STAGE_SETTINGS, type QuestionStageId } from "@/lib/questionStages";
 
 export interface SessionSettings {
   suggestion_order: "random" | "fixed";
@@ -26,7 +26,7 @@ export interface SessionSettings {
   restrict_create_plex: boolean;
   restrict_create_password: boolean;
   trailers_mode: "off" | "on" | "voting";
-  /** Which questionnaire stages to ask. A missing stage key reads as enabled. */
+  /** Which questionnaire stages to ask. A missing stage key reads as that stage's default. */
   question_stages: Record<QuestionStageId, boolean>;
   /** Owned by the Connection tab, not the Settings tab. */
   auto_cache_refresh: boolean;
@@ -49,18 +49,19 @@ export const DEFAULT_SESSION_SETTINGS: SessionSettings = {
   restrict_create_plex: false,
   restrict_create_password: false,
   trailers_mode: "off",
-  question_stages: { genre: true, era: true, runtime: true, language: true },
+  question_stages: DEFAULT_QUESTION_STAGE_SETTINGS,
   auto_cache_refresh: false,
 };
 
-/** The subset the questionnaire needs. */
+/** The subset the questionnaire needs. rating_display names the source the Minimum Rating stage compares against. */
 export type QuestionFlowSettings = Pick<
   SessionSettings,
-  "max_choices" | "max_exclusions" | "question_stages"
+  "max_choices" | "max_exclusions" | "question_stages" | "rating_display"
 >;
 
 export const DEFAULT_QUESTION_FLOW_SETTINGS: QuestionFlowSettings = {
   max_choices: DEFAULT_SESSION_SETTINGS.max_choices,
   max_exclusions: DEFAULT_SESSION_SETTINGS.max_exclusions,
   question_stages: DEFAULT_SESSION_SETTINGS.question_stages,
+  rating_display: DEFAULT_SESSION_SETTINGS.rating_display,
 };

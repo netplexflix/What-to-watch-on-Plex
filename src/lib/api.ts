@@ -414,7 +414,8 @@ export const plexApi = {
       body: JSON.stringify({ userPlexToken, ratingKey }),
     }),
 
-  getCollections: (libraryKeys: string[], mediaType?: string) =>
+  // libraryKeys is optional: when omitted the server uses the libraries configured in the admin panel.
+  getCollections: (libraryKeys?: string[], mediaType?: string) =>
     fetchApi<{ collections: any[]; cached: boolean }>('/plex/get-collections', {
       method: 'POST',
       body: JSON.stringify({ libraryKeys, mediaType }),
