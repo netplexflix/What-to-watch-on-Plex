@@ -111,7 +111,9 @@ const TimedResults = () => {
         .map(key => findItemByKey(key))
         .filter((item): item is PlexItem => item !== null);
       
-      if (tiedPlexItems.length > 1) {
+      // Only spin if the winner itself resolved - otherwise the reel would land on a
+      // poster that didn't win and the caption underneath would render empty.
+      if (tiedPlexItems.length > 1 && tiedPlexItems.some(item => item.ratingKey === data.winner)) {
         setRouletteItems(tiedPlexItems);
         setRouletteWinner(data.winner);
         setPageState('roulette');

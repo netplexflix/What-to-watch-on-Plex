@@ -6,6 +6,13 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useHaptics } from "@/hooks/useHaptics";
 import { wsClient } from "@/lib/websocket";
+import {
+  buildRouletteStrip,
+  ITEM_GAP,
+  ITEM_WIDTH,
+  VISIBLE_COUNT,
+  type RouletteStrip,
+} from "@/lib/rouletteStrip";
 import type { PlexItem } from "@/types/session";
 
 interface RouletteWinnerProps {
@@ -18,51 +25,22 @@ interface RouletteWinnerProps {
 }
 
 const ANIMATION_DURATION = 10000;
-const ITEM_WIDTH = 100;
-const ITEM_GAP = 8;
-const VISIBLE_COUNT = 5;
 
 export const RouletteWinner = ({ items, winnerId, onComplete, isHost = false, sessionId, className }: RouletteWinnerProps) => {
   const haptics = useHaptics();
   const [phase, setPhase] = useState<'waiting' | 'spinning' | 'winner'>('waiting');
-  const [translateX, setTranslateX] = useState(0);
-  
+
+  const stripRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef<number | null>(null);
   const hasCompletedRef = useRef(false);
   const hasStartedRef = useRef(false);
   const lastHapticIndexRef = useRef(-1);
 
-  // Build strip data once
-  const stripData = useRef<{ strip: PlexItem[]; winnerIndex: number; targetOffset: number } | null>(null);
-  
+  // Build strip data once - rebuilding mid-spin would reshuffle the reel under the animation
+  const stripData = useRef<RouletteStrip | null>(null);
+
   if (!stripData.current && items.length > 0) {
-    const itemTotalWidth = ITEM_WIDTH + ITEM_GAP;
-    const containerWidth = VISIBLE_COUNT * ITEM_WIDTH + (VISIBLE_COUNT - 1) * ITEM_GAP;
-    const centerOffset = Math.floor(containerWidth / 2) - Math.floor(ITEM_WIDTH / 2);
-    
-    const seed = winnerId.split('').reduce((acc, char, i) => acc + char.charCodeAt(0) * (i + 1), 0);
-    
-    const stripItems: PlexItem[] = [];
-    const minItems = 40;
-    
-    for (let i = 0; i < minItems; i++) {
-      const itemIndex = (seed + i * 7) % items.length;
-      stripItems.push(items[itemIndex]);
-    }
-    
-    const winnerIdx = 35;
-    const winner = items.find(item => item.ratingKey === winnerId);
-    if (winner) {
-      stripItems[winnerIdx] = winner;
-    }
-    
-    const target = (winnerIdx * itemTotalWidth) - centerOffset;
-    
-    stripData.current = {
-      strip: stripItems,
-      winnerIndex: winnerIdx,
-      targetOffset: Math.max(0, target),
-    };
+    stripData.current = buildRouletteStrip(items, winnerId);
   }
 
   // The actual animation logic - extracted so it can be called from multiple places
@@ -104,9 +82,13 @@ export const RouletteWinner = ({ items, winnerId, onComplete, isHost = false, se
       const progress = Math.min(elapsed / ANIMATION_DURATION, 1);
       const easedProgress = easeOutCubic(progress);
       const currentX = Math.round(easedProgress * targetOffset);
-      
-      setTranslateX(currentX);
-      
+
+      // Written straight to the DOM - going through state would reconcile every poster
+      // cell on all ~600 frames of the spin and stutter on mobile.
+      if (stripRef.current) {
+        stripRef.current.style.transform = `translate3d(${-currentX}px, 0, 0)`;
+      }
+
       // Haptic feedback
       const currentItemIndex = Math.floor(currentX / itemTotalWidth);
       if (currentItemIndex > lastHapticIndexRef.current && progress < 0.9) {
@@ -119,7 +101,9 @@ export const RouletteWinner = ({ items, winnerId, onComplete, isHost = false, se
       } else {
         // Animation complete
         console.log('[Roulette] Animation complete');
-        setTranslateX(targetOffset);
+        if (stripRef.current) {
+          stripRef.current.style.transform = `translate3d(${-targetOffset}px, 0, 0)`;
+        }
         setPhase('winner');
         haptics.success();
         
@@ -267,12 +251,15 @@ export const RouletteWinner = ({ items, winnerId, onComplete, isHost = false, se
             style={{ background: 'linear-gradient(to left, hsl(var(--background)), transparent)' }}
           />
           
-          {/* Scrolling strip */}
+          {/* Scrolling strip - transform is written imperatively in runAnimation() and
+              deliberately kept out of this style prop so React never overwrites it on
+              the re-render that flips phase to 'winner'. */}
           <div
+            ref={stripRef}
             className="flex py-3"
             style={{
               gap: ITEM_GAP,
-              transform: `translateX(${-translateX}px)`,
+              willChange: 'transform',
             }}
           >
             {strip.map((item, index) => {
