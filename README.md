@@ -97,15 +97,17 @@ Equivalent to the `CORS_ORIGINS` environment variable, but managed at runtime wi
 - **Auto Refresh:** Automatically refresh your cache at 3AM.
 - **Custom Logo:** Upload your custom logo to be used on the landing page.
 - **Selection Limits:** Choose how many `Preferences` and `Exclusions` users can set.
-> [!NOTE]
-> `Preferences` are seen just that. If user1 sets preference for `comedy` and user2 sets preference for `action` then the app will first try to find items with both genres, and otherwise suggests a mix of both.<br>
-> `Exclusions` are seen as hard limits. If a user marks `horror` in red, then no horror will be suggested at all.
 - **Question Stages:** Enable or disable the questions individually. A disabled question is treated as if everyone answered "I don't mind", so it simply doesn't narrow the suggestions. Disabling all of them skips the questionnaire entirely and takes users straight from the lobby to swiping.
 - **Minimum Rating question:** When enabled, users pick a minimum rating (`6+` to `8.5+`) after the language question. It is compared against the rating source chosen in `Rating Display` (in `Both` mode an item passes if either rating qualifies). Unrated items are not removed.
 - **Suggestion Order:**
   - `Random` (suggestions appear randomly for each user).
   - `Fixed` (everyone gets the same suggestions in the same order).
-- **Hard Filter Preferences:** When enabled, preferred selections (green) strictly filter results. When disabled, preferences boost item priority but non-matching items may still appear.
+- **Hard Filter Preferences:** When enabled, preferred selections (green) strictly filter results: only matching items are suggested. When disabled, preferred items simply sort to the top of the deck.
+- **Hard Filter Exclusions:** When enabled, excluded selections (red) strictly filter results: excluded items are never suggested. When disabled, excluded items simply sort to the bottom of the deck.
+> [!NOTE]
+> `Preferences` are seen just that. If user1 sets preference for `comedy` and user2 sets preference for `action` then the app will first try to find items with both genres, and otherwise suggests a mix of both.<br>
+> Votes count. Every pick is weighed separately, so an item matching three people's preferences is suggested before one matching a single pick, and a genre three people picked outweighs a genre only one person picked. The same applies to every question (genre, era, runtime, language, minimum rating).<br>
+With `Hard Filter Exclusions` on, if a user marks `horror` in red, then no horror will be suggested at all. With it turned off, it will simply score items with `horror` lower and send them to the back of the deck.
 - **Collections:** Enable a collection picker for the host when creating a session. Only items from selected collections will be suggested.
 - **Open in Plex Button:** Enables a button on the match winner page to open the item in Plex. Only works by opening Plex in a browser tab.
 - **Lobby QR Code:** Display a QR code in the lobby for easy session joining.

@@ -1,7 +1,7 @@
 // File: src/components/admin/AdminSettingsTab.tsx
 import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
-import { Loader2, Save, Shuffle, ListOrdered, Hash, Upload, Trash2, Image, ExternalLink, Tag, X, Plus, Star, QrCode, Smartphone, Type, AlertTriangle, Filter, EyeOff, ShieldCheck, Film, Lock, ListChecks } from "lucide-react";
+import { Loader2, Save, Shuffle, ListOrdered, Hash, Upload, Trash2, Image, ExternalLink, Tag, X, Plus, Star, QrCode, Smartphone, Type, AlertTriangle, Filter, FilterX, EyeOff, ShieldCheck, Film, Lock, ListChecks } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -31,6 +31,7 @@ type OwnedSettings = Pick<
   | "rating_display"
   | "enable_lobby_qr"
   | "hard_filter_preferences"
+  | "hard_filter_exclusions"
   | "filter_watched_items"
   | "require_plex_member"
   | "restrict_create_plex"
@@ -51,6 +52,7 @@ const DEFAULT_SETTINGS: OwnedSettings = {
   rating_display: "critic",
   enable_lobby_qr: false,
   hard_filter_preferences: true,
+  hard_filter_exclusions: true,
   filter_watched_items: true,
   require_plex_member: false,
   restrict_create_plex: false,
@@ -200,6 +202,7 @@ export const AdminSettingsTab = () => {
           rating_display: data.settings.rating_display || "critic",
           enable_lobby_qr: data.settings.enable_lobby_qr ?? false,
           hard_filter_preferences: data.settings.hard_filter_preferences ?? true,
+          hard_filter_exclusions: data.settings.hard_filter_exclusions ?? true,
           filter_watched_items: data.settings.filter_watched_items ?? true,
           require_plex_member: data.settings.require_plex_member ?? false,
           restrict_create_plex: data.settings.restrict_create_plex ?? false,
@@ -689,8 +692,7 @@ export const AdminSettingsTab = () => {
             <h2 className="font-semibold text-foreground">Question Stages</h2>
           </div>
           <p className="text-sm text-muted-foreground mt-1">
-            Choose which questions users answer before swiping. A disabled question is
-            treated as everyone answering "I don't mind".
+            Choose which questions users answer before swiping.
           </p>
         </div>
 
@@ -785,7 +787,7 @@ export const AdminSettingsTab = () => {
               <h2 className="font-semibold text-foreground">Hard Filter Preferences</h2>
             </div>
             <p className="text-sm text-muted-foreground mt-1">
-              When enabled, preferred selections (green) strictly filter results. When disabled, preferences boost item priority but non-matching items may still appear.
+              When enabled, preferred selections (green) strictly filter results: only matching items are suggested. When disabled, preferred items simply sort to the top of the deck.
             </p>
           </div>
           <Switch
@@ -793,6 +795,33 @@ export const AdminSettingsTab = () => {
             onCheckedChange={(checked) => {
               haptics.selection();
               setSettings(s => ({ ...s, hard_filter_preferences: checked }));
+            }}
+          />
+        </div>
+      </motion.div>
+
+      {/* Hard Filter Exclusions Toggle */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.26 }}
+        className="glass-card rounded-xl p-4"
+      >
+        <div className="flex items-center justify-between">
+          <div className="flex-1">
+            <div className="flex items-center gap-2">
+              <FilterX size={20} className="text-primary" />
+              <h2 className="font-semibold text-foreground">Hard Filter Exclusions</h2>
+            </div>
+            <p className="text-sm text-muted-foreground mt-1">
+              When enabled, excluded selections (red) strictly filter results: excluded items are never suggested. When disabled, excluded items simply sort to the bottom of the deck.
+            </p>
+          </div>
+          <Switch
+            checked={settings.hard_filter_exclusions}
+            onCheckedChange={(checked) => {
+              haptics.selection();
+              setSettings(s => ({ ...s, hard_filter_exclusions: checked }));
             }}
           />
         </div>
@@ -988,7 +1017,7 @@ export const AdminSettingsTab = () => {
         </div>
         <p className="text-sm text-muted-foreground">
           Limit who can start a session. Joining an existing session stays open. Enable either
-          restriction or both — with both on, creators must satisfy both.
+          restriction or both.
         </p>
 
         <div className="flex items-center justify-between">

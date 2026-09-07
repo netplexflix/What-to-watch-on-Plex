@@ -38,7 +38,8 @@ export function effectiveRatings(item: RatedItem, mode: RatingDisplay): number[]
 /**
  * How many of the group's thresholds this item clears (0 when unrated). Inclusive, so "7+"
  * keeps a 7.0. The analog of countMatchingEras: > 0 passes the hard filter, and the count
- * feeds the score so titles that satisfy more people surface first.
+ * feeds the score so titles that satisfy more people surface first. `minRatings` holds one
+ * entry per participant, so clearing a threshold two people chose counts twice.
  */
 export function countMetMinRatings(
   item: RatedItem,
@@ -53,9 +54,11 @@ export function countMetMinRatings(
 }
 
 /**
- * Distinct thresholds the participants chose, ascending; [] when nobody set one. A union,
- * like every other preference: the lowest value decides what is shown, the rest decide
- * ordering. Participants recorded before this stage existed simply lack the key.
+ * Every threshold the participants chose, ascending; [] when nobody set one. A union, like
+ * every other preference: the lowest value decides what is shown, the rest decide ordering.
+ * Duplicates are kept on purpose — one entry per participant — so a threshold several people
+ * chose weighs that much more in the score, exactly like a genre several people preferred.
+ * Participants recorded before this stage existed simply lack the key.
  */
 export function aggregateMinRatings(
   participants: Pick<Participant, "preferences">[]
@@ -63,5 +66,5 @@ export function aggregateMinRatings(
   const values = participants
     .map((p) => p.preferences?.minRating)
     .filter(present);
-  return [...new Set(values)].sort((a, b) => a - b);
+  return values.sort((a, b) => a - b);
 }

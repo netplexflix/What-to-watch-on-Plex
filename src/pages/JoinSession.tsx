@@ -142,6 +142,12 @@ const JoinSession = () => {
         throw new Error("Session not found");
       }
 
+      // The mount-time check can be stale if the host started while this screen was
+      // open. The server enforces this too; this just saves a doomed round trip.
+      if (sessionData.session.status !== "waiting") {
+        throw new Error("This session has already started");
+      }
+
       // Persist display name (may differ from Plex username)
       if (joinAsGuest) {
         saveUserIdentity({ type: 'guest', displayName: displayName.trim() });
@@ -170,7 +176,9 @@ const JoinSession = () => {
     } catch (error) {
       console.error("Error joining session:", error);
       haptics.error();
-      toast.error("Failed to join session. Please try again.");
+      toast.error(
+        error instanceof Error ? error.message : "Failed to join session. Please try again."
+      );
     } finally {
       setIsJoining(false);
     }

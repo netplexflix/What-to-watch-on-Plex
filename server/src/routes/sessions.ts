@@ -486,9 +486,19 @@ router.post('/:id/join', async (req, res) => {
 
     const db = getDb();
 
-    const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(id);
+    const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as
+      | { status: string }
+      | undefined;
     if (!session) {
       return res.status(404).json({ error: 'Session not found' });
+    }
+
+    // Lock the session once the host has started it. A late joiner would raise the
+    // participant count that checkForMatchServer compares against, silently turning
+    // an already-declared match back into a non-match. Checked before the Plex gate
+    // so we skip a pointless plex.tv round trip for a session nobody can join.
+    if (session.status !== 'waiting') {
+      return res.status(409).json({ error: 'This session has already started' });
     }
 
     // Enforce optional "require Plex server access" gate

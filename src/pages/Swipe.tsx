@@ -68,7 +68,8 @@ function itemMatchesGenres(itemGenres: string[], preferredGenres: string[]): boo
   return false;
 }
 
-// Count how many preferred genres an item matches
+// Count how many of the group's genre picks an item matches. The list holds one entry per
+// participant, so a genre three people picked counts three times. Also used for exclusions.
 function countMatchingGenres(itemGenres: string[], preferredGenres: string[]): number {
   if (preferredGenres.length === 0) return 0;
   
@@ -100,34 +101,45 @@ function countMatchingGenres(itemGenres: string[], preferredGenres: string[]): n
   return matchCount;
 }
 
-// Check if an item's genres match any excluded genres
-function itemMatchesExcludedGenres(itemGenres: string[], excludedGenres: string[]): boolean {
-  if (excludedGenres.length === 0) return false;
-  
-  const normalizedItemGenres = itemGenres.map(normalizeGenre);
-  
-  for (const excluded of excludedGenres) {
-    if (normalizedItemGenres.includes(normalizeGenre(excluded))) {
-      return true;
-    }
-    
-    const aliases = GENRE_ALIASES[excluded] || [];
-    for (const alias of aliases) {
-      if (normalizedItemGenres.includes(normalizeGenre(alias))) {
-        return true;
-      }
-    }
-  }
-  
-  return false;
-}
-
 // Normalize language for comparison
 function normalizeLanguage(lang: string): string {
   return lang.toLowerCase().trim();
 }
 
-// Count how many preferred languages an item matches
+// How many individual exclusions an item trips across the four questions. Single source of
+// truth for both hard mode (drop when > 0) and soft mode (penalise proportionally), so the
+// two can't drift. Each red pick counts separately — the mirror of how scoreItem counts
+// green picks — so an item matching three excluded genres sinks below one matching a single
+// pick. Reuses the preference counters: they normalize and alias-match identically, and
+// countMatchingGenres(...) > 0 is exactly the old "does this item match any excluded genre",
+// so hard mode keeps the behavior it has always had.
+// An item missing the attribute isn't excluded — same leniency as the preference filter.
+function countMatchedExclusions(item: any, filters: any): number {
+  const itemGenres = item.genres || [];
+  const year = item.year;
+  const itemLanguages = item.languages || [];
+  let count = 0;
+
+  if (filters.excludedGenres && filters.excludedGenres.length > 0) {
+    count += countMatchingGenres(itemGenres, filters.excludedGenres);
+  }
+
+  if (filters.excludedEras && filters.excludedEras.length > 0 && year) {
+    count += countMatchingEras(year, filters.excludedEras);
+  }
+
+  if (filters.excludedRuntimes && filters.excludedRuntimes.length > 0 && item.duration) {
+    count += countMatchingRuntimes(item.duration, filters.excludedRuntimes);
+  }
+
+  if (filters.excludedLanguages && filters.excludedLanguages.length > 0 && itemLanguages.length > 0) {
+    count += countMatchingLanguages(itemLanguages, filters.excludedLanguages);
+  }
+
+  return count;
+}
+
+// Count how many of the group's language picks an item matches (one entry per participant)
 function countMatchingLanguages(itemLanguages: string[], preferredLanguages: string[]): number {
   if (preferredLanguages.length === 0 || itemLanguages.length === 0) return 0;
   
@@ -143,7 +155,8 @@ function countMatchingLanguages(itemLanguages: string[], preferredLanguages: str
   return matchCount;
 }
 
-// Count how many preferred eras an item matches
+// Count how many of the group's era picks an item matches (one entry per participant, and
+// eras overlap, so a 2024 title can match "6months", "2years" and "2020s" from one person)
 function countMatchingEras(year: number, preferredEras: string[]): number {
   if (preferredEras.length === 0 || !year) return 0;
   
@@ -204,14 +217,25 @@ function matchesRuntime(durationMs: number, bucket: string): boolean {
   }
 }
 
-// Count how many preferred runtime buckets an item matches (buckets are disjoint, so 0 or 1)
+// Count how many of the group's runtime picks an item matches. Buckets are disjoint, so this
+// is just how many participants picked the bucket the item falls in.
 function countMatchingRuntimes(durationMs: number, preferredRuntimes: string[]): number {
   if (preferredRuntimes.length === 0 || !durationMs) return 0;
   return preferredRuntimes.filter((bucket) => matchesRuntime(durationMs, bucket)).length;
 }
 
+// Penalty per exclusion an item trips when "Hard Filter Exclusions" is OFF. Both sides now
+// scale with the number of participants, so the margin is worth stating: a preference score
+// tops out around 5 * (200 + picks * 100), which stays well under a million until several
+// hundred people are in one session. Below that an excluded item always sorts beneath a
+// non-excluded one no matter how well it matches the group's green picks, while excluded
+// items still order among themselves by how many red picks they trip.
+const SOFT_EXCLUSION_PENALTY = 1_000_000;
+
 // Score an item based on how well it matches preferences (higher = better match)
-// Items matching MORE preferred criteria are scored higher and appear sooner.
+// Items matching MORE preferred criteria are scored higher and appear sooner. The filter
+// lists hold one entry per participant, so an option several people picked also counts
+// several times: popular picks outweigh one person's.
 // When boosted=true (hard filter OFF), weights are much higher to strongly push
 // non-matching items to the bottom of the list.
 function scoreItem(item: any, filters: any, boosted: boolean = false): number {
@@ -463,72 +487,47 @@ const Swipe = () => {
     return { allCompleted, participants: mappedParticipants };
   }, []);
 
+  // Every pick is kept as its own entry rather than de-duplicated, so the counters that feed
+  // scoreItem and countMatchedExclusions can see how many people asked for each option: a
+  // genre three participants preferred scores three times over, and one three participants
+  // excluded sinks three times as far. Filtering is unaffected — every filter site only asks
+  // whether an item matches at all (itemMatchesGenres, .some(), countMatched... === 0), and
+  // duplicates can't change a boolean.
   const aggregatePreferences = useCallback((participantsList: Participant[]) => {
-    const participantsWithGenres: string[][] = [];
+    const allGenres: string[] = [];
     const allExcludedGenres: string[] = [];
-    const participantsWithEras: string[][] = [];
+    const allEras: string[] = [];
     const allExcludedEras: string[] = [];
-    const participantsWithRuntimes: string[][] = [];
+    const allRuntimes: string[] = [];
     const allExcludedRuntimes: string[] = [];
-    const participantsWithLanguages: string[][] = [];
+    const allLanguages: string[] = [];
     const allExcludedLanguages: string[] = [];
 
     participantsList.forEach((p) => {
-      if (p.preferences?.genres && p.preferences.genres.length > 0) {
-        participantsWithGenres.push(p.preferences.genres);
-      }
+      if (p.preferences?.genres) allGenres.push(...p.preferences.genres);
       if (p.preferences?.excludedGenres) allExcludedGenres.push(...p.preferences.excludedGenres);
 
-      if (p.preferences?.eras && p.preferences.eras.length > 0) {
-        participantsWithEras.push(p.preferences.eras);
-      }
+      if (p.preferences?.eras) allEras.push(...p.preferences.eras);
       if (p.preferences?.excludedEras) allExcludedEras.push(...p.preferences.excludedEras);
 
-      if (p.preferences?.runtimes && p.preferences.runtimes.length > 0) {
-        participantsWithRuntimes.push(p.preferences.runtimes);
-      }
+      if (p.preferences?.runtimes) allRuntimes.push(...p.preferences.runtimes);
       if (p.preferences?.excludedRuntimes) allExcludedRuntimes.push(...p.preferences.excludedRuntimes);
 
-      if (p.preferences?.languages && p.preferences.languages.length > 0) {
-        participantsWithLanguages.push(p.preferences.languages);
-      }
+      if (p.preferences?.languages) allLanguages.push(...p.preferences.languages);
       if (p.preferences?.excludedLanguages) allExcludedLanguages.push(...p.preferences.excludedLanguages);
     });
 
-    let finalGenres: string[] = [];
-    if (participantsWithGenres.length > 0) {
-      const allGenres = participantsWithGenres.flat();
-      finalGenres = [...new Set(allGenres)];
-    }
-
-    let finalEras: string[] = [];
-    if (participantsWithEras.length > 0) {
-      const allEras = participantsWithEras.flat();
-      finalEras = [...new Set(allEras)];
-    }
-
-    let finalRuntimes: string[] = [];
-    if (participantsWithRuntimes.length > 0) {
-      const allRuntimes = participantsWithRuntimes.flat();
-      finalRuntimes = [...new Set(allRuntimes)];
-    }
-
-    let finalLanguages: string[] = [];
-    if (participantsWithLanguages.length > 0) {
-      const allLanguages = participantsWithLanguages.flat();
-      finalLanguages = [...new Set(allLanguages)];
-    }
-
     return {
-      genres: finalGenres,
-      excludedGenres: [...new Set(allExcludedGenres)],
-      eras: finalEras,
-      excludedEras: [...new Set(allExcludedEras)],
-      runtimes: finalRuntimes,
-      excludedRuntimes: [...new Set(allExcludedRuntimes)],
-      languages: finalLanguages,
-      excludedLanguages: [...new Set(allExcludedLanguages)],
-      // Union like the others: the lowest threshold decides what shows, the rest order it.
+      genres: allGenres,
+      excludedGenres: allExcludedGenres,
+      eras: allEras,
+      excludedEras: allExcludedEras,
+      runtimes: allRuntimes,
+      excludedRuntimes: allExcludedRuntimes,
+      languages: allLanguages,
+      excludedLanguages: allExcludedLanguages,
+      // Same one-entry-per-participant rule: the lowest threshold decides what shows, and a
+      // threshold several people chose weighs that much more in the ordering.
       minRatings: aggregateMinRatings(participantsList),
     };
   }, []);
@@ -566,6 +565,7 @@ const Swipe = () => {
       // Load admin settings
       let currentLabelRestrictions = labelRestrictionsRef.current;
       let hardFilterPreferences = true;
+      let hardFilterExclusions = true;
       let filterWatchedItems = true;
       // Local copy for the filters below; the state setter can't be read back synchronously.
       let ratingDisplayMode: RatingDisplay = 'critic';
@@ -579,6 +579,7 @@ const Swipe = () => {
           const trailersMode = settingsData.settings.trailers_mode ?? (settingsData.settings.enable_trailers ? 'on' : 'off');
           setEnableTrailers(trailersMode === 'on');
           hardFilterPreferences = settingsData.settings.hard_filter_preferences ?? true;
+          hardFilterExclusions = settingsData.settings.hard_filter_exclusions ?? true;
           filterWatchedItems = settingsData.settings.filter_watched_items ?? true;
           if (settingsData.settings.enable_label_restrictions) {
             currentLabelRestrictions = {
@@ -637,7 +638,7 @@ const Swipe = () => {
           setLoadingMessage("Fetching media from Plex...");
           const { data: mediaData, error: mediaError } = await plexApi.getMedia(
             mediaType || 'both',
-            { ...aggregatedFilters, hardFilterPreferences, ratingDisplay: ratingDisplayMode }
+            { ...aggregatedFilters, hardFilterPreferences, hardFilterExclusions, ratingDisplay: ratingDisplayMode }
           );
           if (!mediaData) {
             throw new MediaLoadError(mediaError);
@@ -689,51 +690,23 @@ const Swipe = () => {
 
       setLoadingMessage("Applying filters...");
       
-      // Apply HARD filters (exclusions only)
+      // Apply exclusions (red selections). Hard by default; when the admin turns
+      // "Hard Filter Exclusions" off they become a scoring penalty instead (see below), so
+      // a group whose combined exclusions would empty the deck still gets something to swipe.
       const hasExclusions = aggregatedFilters && (
         (aggregatedFilters.excludedGenres?.length > 0) ||
         (aggregatedFilters.excludedEras?.length > 0) ||
         (aggregatedFilters.excludedRuntimes?.length > 0) ||
         (aggregatedFilters.excludedLanguages?.length > 0)
       );
+      const softExclusions = !hardFilterExclusions && hasExclusions;
 
-      if (hasExclusions) {
+      if (hardFilterExclusions && hasExclusions) {
         const beforeCount = fetchedItems.length;
-        fetchedItems = fetchedItems.filter((item: any) => {
-          const itemGenres = item.genres || [];
-          const year = item.year;
-          const itemLanguages = item.languages || [];
-          
-          if (aggregatedFilters.excludedGenres && aggregatedFilters.excludedGenres.length > 0) {
-            if (itemMatchesExcludedGenres(itemGenres, aggregatedFilters.excludedGenres)) {
-              return false;
-            }
-          }
-          
-          if (aggregatedFilters.excludedEras && aggregatedFilters.excludedEras.length > 0 && year) {
-            if (aggregatedFilters.excludedEras.some((era: string) => matchesEra(year, era))) {
-              return false;
-            }
-          }
-
-          if (aggregatedFilters.excludedRuntimes && aggregatedFilters.excludedRuntimes.length > 0 && item.duration) {
-            if (aggregatedFilters.excludedRuntimes.some((r: string) => matchesRuntime(item.duration, r))) {
-              return false;
-            }
-          }
-
-          if (aggregatedFilters.excludedLanguages && aggregatedFilters.excludedLanguages.length > 0) {
-            if (itemLanguages.length > 0) {
-              const normalizedItemLangs = itemLanguages.map(normalizeLanguage);
-              if (aggregatedFilters.excludedLanguages.some((l: string) => normalizedItemLangs.includes(normalizeLanguage(l)))) {
-                return false;
-              }
-            }
-          }
-          
-          return true;
-        });
+        fetchedItems = fetchedItems.filter((item: any) => countMatchedExclusions(item, aggregatedFilters) === 0);
         console.log(`[Swipe] After exclusion filters: ${fetchedItems.length} items (removed ${beforeCount - fetchedItems.length})`);
+      } else if (softExclusions) {
+        console.log('[Swipe] Exclusions are soft: excluded items kept and sorted to the bottom');
       }
 
       // Apply HARD filters for preferences (green selections) when enabled
@@ -809,10 +782,15 @@ const Swipe = () => {
         studio: item.studio,
         audienceRating: item.audienceRating,
         languages: item.languages || [],
-        _score: hasPreferences
+        _score: (hasPreferences
           ? scoreItem(item, { ...aggregatedFilters, ratingDisplay: ratingDisplayMode }, !hardFilterPreferences)
-          : 0,
+          : 0)
+          - (softExclusions ? SOFT_EXCLUSION_PENALTY * countMatchedExclusions(item, aggregatedFilters) : 0),
       }));
+
+      // Soft exclusions order the deck even with no preferences set, so the sort below
+      // can't be gated on hasPreferences alone.
+      const hasScores = hasPreferences || softExclusions;
 
       let orderedItems: (PlexItem & { _score: number })[];
       
@@ -844,8 +822,8 @@ const Swipe = () => {
         console.log(`[Swipe] Using fixed order with seed: ${seed}`);
       } else {
         orderedItems = shuffleWithSeed(transformedItems, Date.now() + Math.random() * 1000000);
-        
-        if (hasPreferences) {
+
+        if (hasScores) {
           orderedItems.sort((a, b) => b._score - a._score);
         }
         
@@ -853,7 +831,7 @@ const Swipe = () => {
       }
 
       // Log score distribution for debugging
-      if (hasPreferences) {
+      if (hasScores) {
         const scoreDistribution = new Map<number, number>();
         for (const item of orderedItems) {
           scoreDistribution.set(item._score, (scoreDistribution.get(item._score) || 0) + 1);

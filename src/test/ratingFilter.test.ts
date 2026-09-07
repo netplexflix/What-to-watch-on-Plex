@@ -39,6 +39,11 @@ describe("countMetMinRatings", () => {
     expect(countMetMinRatings({ rating: 7.5 }, [7.5], "critic")).toBe(1);
   });
 
+  it("counts a threshold once per participant who chose it", () => {
+    expect(countMetMinRatings({ rating: 8.5 }, [7, 7, 8], "critic")).toBe(3);
+    expect(countMetMinRatings({ rating: 7.5 }, [7, 7, 8], "critic")).toBe(2);
+  });
+
   it("passes in 'both' mode when either rating qualifies", () => {
     expect(countMetMinRatings({ rating: 5.0, audienceRating: 8.0 }, [7], "both")).toBe(1);
     expect(countMetMinRatings({ rating: 8.0, audienceRating: 5.0 }, [7], "both")).toBe(1);
@@ -57,13 +62,13 @@ describe("countMetMinRatings", () => {
 });
 
 describe("aggregateMinRatings", () => {
-  it("returns the distinct thresholds ascending", () => {
+  it("keeps one entry per participant, ascending, so a shared threshold weighs more", () => {
     const participants = [
       { preferences: { minRating: 8 } },
       { preferences: { minRating: 7 } },
       { preferences: { minRating: 8 } },
     ];
-    expect(aggregateMinRatings(participants)).toEqual([7, 8]);
+    expect(aggregateMinRatings(participants)).toEqual([7, 8, 8]);
   });
 
   it("is empty when nobody chose one", () => {

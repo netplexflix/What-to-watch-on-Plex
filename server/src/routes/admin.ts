@@ -350,6 +350,7 @@ router.post('/get-session-settings', (req, res) => {
           // stage's default (see DEFAULT_QUESTION_STAGE_SETTINGS in src/lib/questionStages.ts).
           question_stages: settings.question_stages,
           hard_filter_preferences: settings.hard_filter_preferences,
+          hard_filter_exclusions: settings.hard_filter_exclusions,
           filter_watched_items: settings.filter_watched_items,
           require_plex_member: settings.require_plex_member,
           // Session creation restrictions (the password hash itself lives in its own

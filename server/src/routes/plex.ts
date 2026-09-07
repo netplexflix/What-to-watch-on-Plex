@@ -2538,21 +2538,25 @@ function applyFilters(items: any[], filters: any): any[] {
     const year = item.year;
     const itemLanguages = item.languages || [];
 
-    // Exclusion filters (hard remove)
-    if (filters.excludedGenres?.length > 0) {
-      if (genresMatch(itemGenres, filters.excludedGenres)) return false;
-    }
+    // Exclusion filters (hard remove). Soft mode keeps excluded items instead; the client
+    // scores them to the bottom of the deck. `!== false` so a client that doesn't send the
+    // flag still gets the hard behavior this route has always had.
+    if (filters.hardFilterExclusions !== false) {
+      if (filters.excludedGenres?.length > 0) {
+        if (genresMatch(itemGenres, filters.excludedGenres)) return false;
+      }
 
-    if (filters.excludedEras?.length > 0 && year) {
-      if (filters.excludedEras.some((era: string) => matchesEra(year, era))) return false;
-    }
+      if (filters.excludedEras?.length > 0 && year) {
+        if (filters.excludedEras.some((era: string) => matchesEra(year, era))) return false;
+      }
 
-    if (filters.excludedRuntimes?.length > 0 && item.duration) {
-      if (filters.excludedRuntimes.some((r: string) => matchesRuntime(item.duration, r))) return false;
-    }
+      if (filters.excludedRuntimes?.length > 0 && item.duration) {
+        if (filters.excludedRuntimes.some((r: string) => matchesRuntime(item.duration, r))) return false;
+      }
 
-    if (filters.excludedLanguages?.length > 0 && itemLanguages.length > 0) {
-      if (languagesMatch(itemLanguages, filters.excludedLanguages)) return false;
+      if (filters.excludedLanguages?.length > 0 && itemLanguages.length > 0) {
+        if (languagesMatch(itemLanguages, filters.excludedLanguages)) return false;
+      }
     }
 
     // Preference filters (only show matching items)

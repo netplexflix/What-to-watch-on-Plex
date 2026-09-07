@@ -20,6 +20,8 @@ export interface SessionSettings {
   rating_display: "critic" | "audience" | "both";
   enable_lobby_qr: boolean;
   hard_filter_preferences: boolean;
+  /** Exclusions (red picks) strictly remove items. When false they only sink to the bottom. */
+  hard_filter_exclusions: boolean;
   /** Exclude items a Plex-signed-in user has already watched from their deck. */
   filter_watched_items: boolean;
   require_plex_member: boolean;
@@ -44,6 +46,7 @@ export const DEFAULT_SESSION_SETTINGS: SessionSettings = {
   rating_display: "critic",
   enable_lobby_qr: false,
   hard_filter_preferences: true,
+  hard_filter_exclusions: true,
   filter_watched_items: true,
   require_plex_member: false,
   restrict_create_plex: false,
