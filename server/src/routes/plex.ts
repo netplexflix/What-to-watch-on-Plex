@@ -145,11 +145,16 @@ function getPlexConfig() {
   return config;
 }
 
-function getSessionSettings() {
-  const db = getDb();
-  const row = db.prepare('SELECT value FROM app_config WHERE key = ?').get('session_settings') as { value: string } | undefined;
-  if (!row) return {};
-  return JSON.parse(row.value);
+// Admin setting "Filter Watched Items" (session_settings.filter_watched_items).
+// A missing key or unreadable blob reads as enabled — filtering is the default behavior.
+function isWatchedFilterEnabled(): boolean {
+  try {
+    const row = getDb().prepare('SELECT value FROM app_config WHERE key = ?').get('session_settings') as { value: string } | undefined;
+    if (!row) return true;
+    return JSON.parse(row.value)?.filter_watched_items !== false;
+  } catch {
+    return true;
+  }
 }
 
 // ============ PLEX SERVER MEMBERSHIP VERIFICATION ============
@@ -354,7 +359,11 @@ router.post('/get-collections', async (req, res) => {
     }
     
     const { libraryKeys, mediaType } = req.body;
-    const selectedLibraries = libraryKeys || config.libraries || [];
+    // Fall back to the configured libraries when the caller sends none. An empty array counts as
+    // "none" too - `[] || x` would keep the empty array and yield no collections at all.
+    const selectedLibraries: string[] = Array.isArray(libraryKeys) && libraryKeys.length > 0
+      ? libraryKeys
+      : (config.libraries || []);
     const sortedLibraryKeys = [...selectedLibraries].sort().join(',');
     const cacheKey = `${sortedLibraryKeys}:${mediaType || 'all'}`;
     
@@ -1165,6 +1174,11 @@ router.get('/session/:sessionId/watched-keys/:participantId', async (req, res) =
   try {
     const config = getPlexConfig();
     if (!config?.plex_url) {
+      return res.json({ watchedKeys: [] });
+    }
+
+    // Admin has watched-filtering switched off: report nothing as watched.
+    if (!isWatchedFilterEnabled()) {
       return res.json({ watchedKeys: [] });
     }
 
@@ -2479,42 +2493,113 @@ function createMediaItem(detailedItem: any, libraryType: string, languages: stri
   };
 }
 
+// Genre/language matching must agree with the client-side filter in src/pages/Swipe.tsx,
+// which is what runs on the normal (cached) path — this copy only runs on a cache miss.
+// Without the aliases and normalization below, the two paths disagree: preferring
+// "Sci-Fi" would match nothing (Plex stores "Science Fiction") and, worse, excluding
+// "Sci-Fi" would fail to remove those items, letting a hard exclusion leak through.
+// Keep in sync with GENRE_ALIASES / normalizeGenre / normalizeLanguage in Swipe.tsx.
+const GENRE_ALIASES: Record<string, string[]> = {
+  "Sci-Fi": ["Science Fiction", "Sci-Fi", "SciFi", "SF"],
+  "Science Fiction": ["Science Fiction", "Sci-Fi", "SciFi", "SF"],
+  "Rom-Com": ["Romantic Comedy", "Romance", "Comedy"],
+  "Romantic Comedy": ["Romantic Comedy", "Romance"],
+  "Action": ["Action", "Action/Adventure"],
+  "Adventure": ["Adventure", "Action/Adventure"],
+};
+
+function normalizeGenre(genre: string): string {
+  return genre.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function normalizeLanguage(lang: string): string {
+  return lang.toLowerCase().trim();
+}
+
+// True when any of `genres` matches the item, comparing normalized names and aliases.
+function genresMatch(itemGenres: string[], genres: string[]): boolean {
+  const normalizedItemGenres = itemGenres.map(normalizeGenre);
+
+  return genres.some(genre => {
+    if (normalizedItemGenres.includes(normalizeGenre(genre))) return true;
+    const aliases = GENRE_ALIASES[genre] || [];
+    return aliases.some(alias => normalizedItemGenres.includes(normalizeGenre(alias)));
+  });
+}
+
+function languagesMatch(itemLanguages: string[], languages: string[]): boolean {
+  const normalizedItemLangs = itemLanguages.map(normalizeLanguage);
+  return languages.some(l => normalizedItemLangs.includes(normalizeLanguage(l)));
+}
+
 function applyFilters(items: any[], filters: any): any[] {
   return items.filter(item => {
     const itemGenres = item.genres || item.Genre?.map((g: any) => g.tag) || [];
     const year = item.year;
     const itemLanguages = item.languages || [];
 
-    // Exclusion filters (hard remove)
-    if (filters.excludedGenres?.length > 0) {
-      if (filters.excludedGenres.some((g: string) => itemGenres.includes(g))) return false;
-    }
+    // Exclusion filters (hard remove). Soft mode keeps excluded items instead; the client
+    // scores them to the bottom of the deck. `!== false` so a client that doesn't send the
+    // flag still gets the hard behavior this route has always had.
+    if (filters.hardFilterExclusions !== false) {
+      if (filters.excludedGenres?.length > 0) {
+        if (genresMatch(itemGenres, filters.excludedGenres)) return false;
+      }
 
-    if (filters.excludedEras?.length > 0 && year) {
-      if (filters.excludedEras.some((era: string) => matchesEra(year, era))) return false;
-    }
+      if (filters.excludedEras?.length > 0 && year) {
+        if (filters.excludedEras.some((era: string) => matchesEra(year, era))) return false;
+      }
 
-    if (filters.excludedLanguages?.length > 0 && itemLanguages.length > 0) {
-      if (filters.excludedLanguages.some((l: string) => itemLanguages.includes(l))) return false;
+      if (filters.excludedRuntimes?.length > 0 && item.duration) {
+        if (filters.excludedRuntimes.some((r: string) => matchesRuntime(item.duration, r))) return false;
+      }
+
+      if (filters.excludedLanguages?.length > 0 && itemLanguages.length > 0) {
+        if (languagesMatch(itemLanguages, filters.excludedLanguages)) return false;
+      }
     }
 
     // Preference filters (only show matching items)
     if (filters.hardFilterPreferences) {
       if (filters.genres?.length > 0 && itemGenres.length > 0) {
-        if (!filters.genres.some((g: string) => itemGenres.includes(g))) return false;
+        if (!genresMatch(itemGenres, filters.genres)) return false;
       }
 
       if (filters.eras?.length > 0 && year) {
         if (!filters.eras.some((era: string) => matchesEra(year, era))) return false;
       }
 
+      if (filters.runtimes?.length > 0 && item.duration) {
+        if (!filters.runtimes.some((r: string) => matchesRuntime(item.duration, r))) return false;
+      }
+
       if (filters.languages?.length > 0 && itemLanguages.length > 0) {
-        if (!filters.languages.some((l: string) => itemLanguages.includes(l))) return false;
+        if (!languagesMatch(itemLanguages, filters.languages)) return false;
+      }
+
+      // Unrated items pass, like items without a year skip the era check.
+      if (filters.minRatings?.length > 0) {
+        const mode: RatingDisplay = filters.ratingDisplay || 'critic';
+        if (effectiveRatings(item, mode).length > 0 && countMetMinRatings(item, filters.minRatings, mode) === 0) {
+          return false;
+        }
       }
     }
 
     return true;
   });
+}
+
+// Keep bucket boundaries in sync with matchesRuntime in src/pages/Swipe.tsx
+// and the RUNTIMES labels in src/lib/questionStages.ts. duration is in milliseconds.
+function matchesRuntime(durationMs: number, bucket: string): boolean {
+  const mins = durationMs / 60000;
+  switch (bucket) {
+    case 'short': return mins < 90;
+    case 'medium': return mins >= 90 && mins <= 120;
+    case 'long': return mins > 120;
+    default: return false;
+  }
 }
 
 function matchesEra(year: number, era: string): boolean {
@@ -2527,7 +2612,6 @@ function matchesEra(year: number, era: string): boolean {
   switch (era) {
     case '6months': return year >= sixMonthsAgoYear && year <= currentYear;
     case '2years': return year >= currentYear - 2;
-    case 'recent': return year >= currentYear - 2;
     case '2020s': return year >= 2020;
     case '2010s': return year >= 2010 && year < 2020;
     case '2000s': return year >= 2000 && year < 2010;
@@ -2536,6 +2620,38 @@ function matchesEra(year: number, era: string): boolean {
     case 'classic': return year < 1980;
     default: return false;
   }
+}
+
+// Minimum-rating preference. Keep in sync with src/lib/ratingFilter.ts, which runs on the
+// normal (cached) path; this copy only runs on a cache miss.
+type RatingDisplay = 'critic' | 'audience' | 'both';
+type RatedItem = { rating?: number; audienceRating?: number };
+
+// The cards test ratings for truthiness, so 0 counts as "no rating" here too.
+const ratingPresent = (value: number | undefined): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && value > 0;
+
+// Exactly the numbers the detail cards render for this display mode: the selected
+// source(s) when present, otherwise whichever exists (critic first). Empty when unrated.
+function effectiveRatings(item: RatedItem, mode: RatingDisplay): number[] {
+  const ratings: number[] = [];
+  if ((mode === 'critic' || mode === 'both') && ratingPresent(item.rating)) ratings.push(item.rating);
+  if ((mode === 'audience' || mode === 'both') && ratingPresent(item.audienceRating)) {
+    ratings.push(item.audienceRating);
+  }
+  if (ratings.length > 0) return ratings;
+  if (ratingPresent(item.rating)) return [item.rating];
+  if (ratingPresent(item.audienceRating)) return [item.audienceRating];
+  return [];
+}
+
+// How many of the group's thresholds this item clears (0 when unrated). Inclusive.
+function countMetMinRatings(item: RatedItem, minRatings: number[], mode: RatingDisplay): number {
+  if (minRatings.length === 0) return 0;
+  const ratings = effectiveRatings(item, mode);
+  if (ratings.length === 0) return 0;
+  const best = Math.max(...ratings);
+  return minRatings.filter((threshold) => best >= threshold).length;
 }
 
 // Short-lived cache for per-user watched lookups
@@ -2606,13 +2722,17 @@ router.get('/last-cache-refresh', (req, res) => {
     if (manualRefreshRow?.value) {
       try {
         lastManualRefresh = JSON.parse(manualRefreshRow.value);
-      } catch (e) {}
+      } catch (e) {
+        // Malformed row — treat as "never refreshed".
+      }
     }
     
     if (autoRefreshRow?.value) {
       try {
         lastAutoRefresh = JSON.parse(autoRefreshRow.value);
-      } catch (e) {}
+      } catch (e) {
+        // Malformed row — treat as "never refreshed".
+      }
     }
     
     let lastRefresh = null;

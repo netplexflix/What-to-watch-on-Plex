@@ -1,8 +1,7 @@
 // File: src/pages/Results.tsx
 import { useState, useEffect, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { motion } from "framer-motion";
-import { Home, Loader2, Frown } from "lucide-react";
+import { Home, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { MatchCelebration } from "@/components/MatchCelebration";
 import { NoMatchFallback } from "@/components/NoMatchFallback";
@@ -21,7 +20,10 @@ const Results = () => {
   const [loading, setLoading] = useState(true);
   const [winnerItem, setWinnerItem] = useState<PlexItem | null>(null);
   const [noMatch, setNoMatch] = useState(false);
-  const [topItems, setTopItems] = useState<{ item: PlexItem; votes: number }[]>([]);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [topItems, setTopItems] = useState<
+    { item: PlexItem; yesVotes: number; totalVotes: number; percentage: number }[]
+  >([]);
   const [enablePlexButton, setEnablePlexButton] = useState(false);
   const [ratingDisplay, setRatingDisplay] = useState<'critic' | 'audience' | 'both'>('critic');
   
@@ -55,6 +57,7 @@ const Results = () => {
         }
 
         const session = sessionData.session;
+        setSessionId(session.id);
 
         if (session.status === "no_match") {
           setNoMatch(true);
@@ -121,8 +124,13 @@ const Results = () => {
       });
 
       const { data: mediaData } = await sessionsApi.getCachedMedia(mediaType || 'both');
-      
+
       if (!mediaData?.items) return;
+
+      // Approval is measured against everyone in the session, so a participant who never
+      // swiped still counts against the percentage.
+      const { data: participantsData } = await sessionsApi.getParticipants(sid);
+      const participantCount = participantsData?.participants?.length || 0;
 
       const sortedItems = Array.from(voteCounts.entries())
         .sort((a, b) => b[1] - a[1])
@@ -150,10 +158,17 @@ const Results = () => {
               audienceRating: item.audienceRating,
               languages: item.languages || [],
             } as PlexItem,
-            votes,
+            yesVotes: votes,
+            totalVotes: participantCount,
+            percentage: participantCount > 0 ? Math.round((votes / participantCount) * 100) : 0,
           };
         })
-        .filter(Boolean) as { item: PlexItem; votes: number }[];
+        .filter(Boolean) as {
+          item: PlexItem;
+          yesVotes: number;
+          totalVotes: number;
+          percentage: number;
+        }[];
 
       setTopItems(sortedItems);
     } catch (error) {
@@ -165,6 +180,23 @@ const Results = () => {
     clearLocalSession();
     haptics.medium();
     navigate("/");
+  };
+
+  // Picking one of the runners-up promotes it to the session winner.
+  const handleSelectFallbackItem = async (item: PlexItem) => {
+    haptics.success();
+
+    if (sessionId) {
+      try {
+        await sessionsApi.update(sessionId, { winner_item_key: item.ratingKey });
+      } catch (error) {
+        // Best-effort: still show the winner locally if the session couldn't be updated.
+        console.error("Error saving fallback pick:", error);
+      }
+    }
+
+    setWinnerItem(item);
+    setNoMatch(false);
   };
 
   if (loading) {
@@ -182,36 +214,12 @@ const Results = () => {
           <div className="absolute inset-0 bg-gradient-to-br from-primary/5 via-transparent to-accent/5" />
         </div>
 
-        <div className="flex-1 flex flex-col items-center justify-center px-6 relative z-10">
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="w-full max-w-md text-center"
-          >
-            <div className="w-20 h-20 bg-muted rounded-full flex items-center justify-center mx-auto mb-6">
-              <Frown size={40} className="text-muted-foreground" />
-            </div>
-
-            <h1 className="text-2xl font-bold text-foreground mb-2">
-              No Perfect Match
-            </h1>
-            <p className="text-muted-foreground mb-8">
-              The group couldn't agree on one title, but here are the closest options:
-            </p>
-
-            <NoMatchFallback items={topItems} />
-
-            <div className="flex flex-col gap-3 mt-4">
-              <Button
-                onClick={handleNewSession}
-                variant="outline"
-                className="w-full h-12 text-base font-semibold border-secondary text-foreground hover:bg-secondary"
-              >
-                <Home size={18} className="mr-2" />
-                New Session
-              </Button>
-            </div>
-          </motion.div>
+        <div className="flex-1 relative z-10">
+          <NoMatchFallback
+            topItems={topItems}
+            onSelectItem={handleSelectFallbackItem}
+            onPlayAgain={handleNewSession}
+          />
         </div>
       </div>
     );

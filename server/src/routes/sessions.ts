@@ -5,13 +5,52 @@ import { getDb, generateId } from '../db.js';
 import { broadcastToSession } from '../websocket.js';
 import { encryptToken } from '../services/encryption.js';
 import { verifyPlexServerMembership } from './plex.js';
+import { createRateLimiter, verifyPasswordServer } from '../middleware/auth.js';
+
+// Sentinel item_key for a blank "no preference" final vote. final_votes.item_key is NOT NULL and
+// SQLite can't alter a column, so abstentions are stored as this key instead of NULL. Real Plex
+// ratingKeys are numeric strings, so it can never collide with an actual item.
+// Keep in sync with ABSTAIN_ITEM_KEY in src/types/session.ts.
+const ABSTAIN_ITEM_KEY = '__no_preference__';
+
+// Without any full matches the voting page falls back to the most-liked items and shows at most this
+// many. Full matches are never capped (a match target above six promises that many candidates), so an
+// all-abstain roulette spins over exactly the posters that were on screen.
+// Keep in sync with TOP_LIKED_LIMIT in src/pages/TimedResults.tsx.
+const TOP_LIKED_LIMIT = 6;
+
+function getSessionSettings(db: any): any {
+  const row = db.prepare('SELECT value FROM app_config WHERE key = ?').get('session_settings') as { value: string } | undefined;
+  if (!row) return {};
+  try {
+    return JSON.parse(row.value) || {};
+  } catch {
+    return {};
+  }
+}
 
 function isPlexMemberGateEnabled(db: any): boolean {
-  const row = db.prepare('SELECT value FROM app_config WHERE key = ?').get('session_settings') as { value: string } | undefined;
-  if (!row) return false;
+  return !!getSessionSettings(db).require_plex_member;
+}
+
+// Stored hash for the session creation password, or null when none is configured.
+function getCreatePasswordHash(db: any): string | null {
+  const row = db.prepare('SELECT value FROM app_config WHERE key = ?').get('create_session_password') as { value: string } | undefined;
+  if (!row) return null;
   try {
-    const settings = JSON.parse(row.value);
-    return !!settings.require_plex_member;
+    const config = JSON.parse(row.value);
+    return config?.hash || null;
+  } catch {
+    return null;
+  }
+}
+
+function isCreatePasswordCorrect(db: any, password: unknown): boolean {
+  const hash = getCreatePasswordHash(db);
+  if (!hash) return true; // Restriction enabled but never configured — don't lock anyone out.
+  if (!password || typeof password !== 'string') return false;
+  try {
+    return verifyPasswordServer(password, hash);
   } catch {
     return false;
   }
@@ -39,7 +78,57 @@ async function enforcePlexMemberGate(
   return true;
 }
 
+// Session creation restrictions. Both may be enabled, in which case both must pass.
+// Returns true if the request may create a session; otherwise responds with 403 and returns false.
+async function enforceCreateGate(
+  db: any,
+  res: Response,
+  plexToken: string | undefined,
+  isGuest: boolean,
+  createPassword: unknown
+): Promise<boolean> {
+  const settings = getSessionSettings(db);
+
+  if (settings.restrict_create_plex) {
+    if (isGuest || !plexToken || typeof plexToken !== 'string') {
+      res.status(403).json({ error: 'Plex sign-in is required to create a session.' });
+      return false;
+    }
+    const { hasAccess } = await verifyPlexServerMembership(plexToken);
+    if (!hasAccess) {
+      res.status(403).json({ error: 'Your Plex account does not have access to this server.' });
+      return false;
+    }
+  }
+
+  if (settings.restrict_create_password && !isCreatePasswordCorrect(db, createPassword)) {
+    res.status(403).json({ error: 'Incorrect session password.' });
+    return false;
+  }
+
+  return true;
+}
+
 const router = Router();
+
+const createPasswordRateLimiter = createRateLimiter(15 * 60 * 1000, 20); // 15 min window, 20 max
+
+// Verify the session creation password (used to gate before opening the create page)
+router.post('/verify-create-password', createPasswordRateLimiter, (req, res) => {
+  try {
+    const { password } = req.body || {};
+    const db = getDb();
+
+    if (!getSessionSettings(db).restrict_create_password) {
+      return res.json({ valid: true });
+    }
+
+    res.json({ valid: isCreatePasswordCorrect(db, password) });
+  } catch (error) {
+    console.error('[Sessions] Error verifying create password:', error);
+    res.status(500).json({ error: 'Failed to verify password' });
+  }
+});
 
 function generateSessionCode(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -71,8 +160,8 @@ function countSessionMatches(db: any, sessionId: string): number {
 // Create session
 router.post('/create', async (req, res) => {
   try {
-    const { mediaType, displayName, isGuest, plexToken, timedDuration, useWatchlist, matchTarget } = req.body;
-    const { plexToken: _logToken, ...safeLogBody } = req.body;
+    const { mediaType, displayName, isGuest, plexToken, timedDuration, useWatchlist, matchTarget, createPassword } = req.body;
+    const { plexToken: _logToken, createPassword: _logCreatePassword, ...safeLogBody } = req.body;
     console.log('[Sessions] Create request body:', JSON.stringify(safeLogBody));
 
     // Validate required fields
@@ -85,6 +174,11 @@ router.post('/create', async (req, res) => {
 
     // Enforce optional "require Plex server access" gate
     if (!(await enforcePlexMemberGate(db, res, plexToken, !!isGuest))) {
+      return;
+    }
+
+    // Enforce optional restrictions on who may create a session
+    if (!(await enforceCreateGate(db, res, plexToken, !!isGuest, createPassword))) {
       return;
     }
 
@@ -392,9 +486,19 @@ router.post('/:id/join', async (req, res) => {
 
     const db = getDb();
 
-    const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(id);
+    const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as
+      | { status: string }
+      | undefined;
     if (!session) {
       return res.status(404).json({ error: 'Session not found' });
+    }
+
+    // Lock the session once the host has started it. A late joiner would raise the
+    // participant count that checkForMatchServer compares against, silently turning
+    // an already-declared match back into a non-match. Checked before the Plex gate
+    // so we skip a pointless plex.tv round trip for a session nobody can join.
+    if (session.status !== 'waiting') {
+      return res.status(409).json({ error: 'This session has already started' });
     }
 
     // Enforce optional "require Plex server access" gate
@@ -525,14 +629,11 @@ router.post('/:id/votes', (req, res) => {
     // Broadcast vote to other participants
     broadcastToSession(id, 'vote_added', { participantId, itemKey, vote });
     
-    // Check session type (timed, match_target, or classic)
+    // Check session type (timed, match_target, timed+target, or classic)
     const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as any;
-    
-    // For timed sessions, don't check for immediate match
-    if (session?.timed_duration) {
-      return res.json({ success: true, voteId, match: false });
-    }
-    
+
+    // Match target takes precedence over the timer: a timed+target session still has to
+    // count matches so it can end early once the target is reached.
     // For match_target sessions, check if this vote created a new match
     if (session?.match_target && session.match_target > 0) {
       // Always compute the current match count after any YES vote
@@ -578,7 +679,12 @@ router.post('/:id/votes', (req, res) => {
       const matchCount = countSessionMatches(db, id);
       return res.json({ success: true, voteId, match: false, matchCount });
     }
-    
+
+    // For timed sessions without a target, don't check for immediate match
+    if (session?.timed_duration) {
+      return res.json({ success: true, voteId, match: false });
+    }
+
     // Check for match if this was a YES vote (classic non-timed session)
     if (vote) {
       const matchResult = checkForMatchServer(db, id, itemKey);
@@ -683,7 +789,9 @@ function recordSessionHistory(db: any, sessionId: string, winnerItemKey: string 
     
     const participantNames = participants.map(p => p.display_name);
     
-    const sessionType = session.match_target
+    const sessionType = session.timed_duration && session.match_target
+      ? 'timed_target'
+      : session.match_target
       ? 'target'
       : session.timed_duration
       ? 'timed'
@@ -748,44 +856,59 @@ router.delete('/:sessionId/votes/:participantId/:itemKey', (req, res) => {
   }
 });
 
+// Build the item lists the voting page renders: full matches, plus top-liked as a fallback.
+function getSessionMatches(db: any, sessionId: string): {
+  matches: string[];
+  topLiked: { itemKey: string; likeCount: number }[];
+} {
+  // Get all participants
+  const participants = db.prepare('SELECT id FROM session_participants WHERE session_id = ?').all(sessionId) as any[];
+  const totalParticipants = participants.length;
+
+  if (totalParticipants === 0) {
+    return { matches: [], topLiked: [] };
+  }
+
+  // Find items that ALL participants liked
+  const matchQuery = db.prepare(`
+    SELECT item_key, COUNT(DISTINCT participant_id) as like_count
+    FROM votes
+    WHERE session_id = ? AND vote = 1
+    GROUP BY item_key
+    HAVING like_count = ?
+  `).all(sessionId, totalParticipants) as { item_key: string; like_count: number }[];
+
+  const matches = matchQuery.map(m => m.item_key);
+
+  // Also get top liked items (for fallback if no matches)
+  const topLikedQuery = db.prepare(`
+    SELECT item_key, COUNT(DISTINCT participant_id) as like_count
+    FROM votes
+    WHERE session_id = ? AND vote = 1
+    GROUP BY item_key
+    ORDER BY like_count DESC
+    LIMIT 10
+  `).all(sessionId) as { item_key: string; like_count: number }[];
+
+  const topLiked = topLikedQuery.map(t => ({ itemKey: t.item_key, likeCount: t.like_count }));
+
+  return { matches, topLiked };
+}
+
+// The items actually on screen during voting - mirrors the client's choice of list and its cap.
+function getVotingCandidateKeys(db: any, sessionId: string): string[] {
+  const { matches, topLiked } = getSessionMatches(db, sessionId);
+  if (matches.length > 0) return matches;
+  return topLiked.slice(0, TOP_LIKED_LIMIT).map(t => t.itemKey);
+}
+
 // Get matches for timed/match-target session
 router.get('/:id/matches', (req, res) => {
   try {
     const { id } = req.params;
     const db = getDb();
-    
-    // Get all participants
-    const participants = db.prepare('SELECT id FROM session_participants WHERE session_id = ?').all(id) as any[];
-    const totalParticipants = participants.length;
-    
-    if (totalParticipants === 0) {
-      return res.json({ matches: [], topLiked: [] });
-    }
-    
-    // Find items that ALL participants liked
-    const matchQuery = db.prepare(`
-      SELECT item_key, COUNT(DISTINCT participant_id) as like_count
-      FROM votes
-      WHERE session_id = ? AND vote = 1
-      GROUP BY item_key
-      HAVING like_count = ?
-    `).all(id, totalParticipants) as { item_key: string; like_count: number }[];
-    
-    const matches = matchQuery.map(m => m.item_key);
-    
-    // Also get top liked items (for fallback if no matches)
-    const topLikedQuery = db.prepare(`
-      SELECT item_key, COUNT(DISTINCT participant_id) as like_count
-      FROM votes
-      WHERE session_id = ? AND vote = 1
-      GROUP BY item_key
-      ORDER BY like_count DESC
-      LIMIT 10
-    `).all(id) as { item_key: string; like_count: number }[];
-    
-    const topLiked = topLikedQuery.map(t => ({ itemKey: t.item_key, likeCount: t.like_count }));
-    
-    res.json({ matches, topLiked });
+
+    res.json(getSessionMatches(db, id));
   } catch (error) {
     console.error('Error getting matches:', error);
     res.status(500).json({ error: 'Failed to get matches' });
@@ -798,12 +921,15 @@ router.get('/:id/match-count', (req, res) => {
     const { id } = req.params;
     const db = getDb();
     
-    const session = db.prepare('SELECT match_target FROM sessions WHERE id = ?').get(id) as any;
+    const session = db.prepare('SELECT match_target, status FROM sessions WHERE id = ?').get(id) as any;
     const matchCount = countSessionMatches(db, id);
-    
-    res.json({ 
-      matchCount, 
-      matchTarget: session?.match_target || 0 
+
+    // `status` lets the swipe page's periodic sync notice the move to voting without a
+    // second request, so a client that missed the session_updated broadcast still follows.
+    res.json({
+      matchCount,
+      matchTarget: session?.match_target || 0,
+      status: session?.status || null
     });
   } catch (error) {
     console.error('Error getting match count:', error);
@@ -811,101 +937,177 @@ router.get('/:id/match-count', (req, res) => {
   }
 });
 
-// Cast final vote (for timed/match-target sessions)
+// Tally the final votes, mark the session completed and broadcast the outcome.
+// Shared by the "everyone voted" path and the host's manual end-of-voting override.
+function finalizeVoting(db: any, sessionId: string): {
+  winner: string | null;
+  wasTie: boolean;
+  tiedItems: string[];
+  voteCounts: Record<string, number>;
+} {
+  const finalVotes = db.prepare('SELECT * FROM final_votes WHERE session_id = ?').all(sessionId) as any[];
+
+  // Blank "no preference" votes count towards everyone having voted, but never towards an item.
+  const voteCounts = new Map<string, number>();
+  finalVotes
+    .filter((v: any) => v.item_key !== ABSTAIN_ITEM_KEY)
+    .forEach((v: any) => {
+      voteCounts.set(v.item_key, (voteCounts.get(v.item_key) || 0) + 1);
+    });
+
+  let topItems: string[];
+  let wasTie: boolean;
+
+  if (voteCounts.size === 0) {
+    // Nobody expressed a preference (all blank, or the host ended voting before any real vote):
+    // treat every item on the voting page as tied and let the roulette decide.
+    topItems = getVotingCandidateKeys(db, sessionId);
+    wasTie = topItems.length > 1;
+  } else {
+    let maxVotes = 0;
+    voteCounts.forEach((count) => {
+      if (count > maxVotes) maxVotes = count;
+    });
+
+    topItems = [];
+    voteCounts.forEach((count, itemKey) => {
+      if (count === maxVotes) topItems.push(itemKey);
+    });
+
+    wasTie = topItems.length > 1;
+  }
+
+  const countsObject = Object.fromEntries(voteCounts);
+
+  if (topItems.length === 0) {
+    // No votes and no candidates - nothing to declare, leave the session as-is.
+    console.warn(`[Sessions] Cannot finalize voting for session ${sessionId}: no votes and no candidates`);
+    return { winner: null, wasTie: false, tiedItems: [], voteCounts: countsObject };
+  }
+
+  const winner = topItems.length === 1
+    ? topItems[0]
+    : topItems[Math.floor(Math.random() * topItems.length)];
+
+  // Update session
+  db.prepare(`
+    UPDATE sessions SET winner_item_key = ?, status = 'completed', updated_at = datetime('now')
+    WHERE id = ?
+  `).run(winner, sessionId);
+
+  // Record in history
+  recordSessionHistory(db, sessionId, winner);
+
+  const tiedItems = wasTie ? topItems : [];
+
+  // Broadcast result
+  broadcastToSession(sessionId, 'voting_complete', {
+    winner,
+    wasTie,
+    tiedItems,
+    voteCounts: countsObject,
+  });
+
+  return { winner, wasTie, tiedItems, voteCounts: countsObject };
+}
+
+// Cast final vote (for timed/match-target sessions).
+// itemKey may be ABSTAIN_ITEM_KEY for a blank "no preference" vote.
 router.post('/:id/final-vote', (req, res) => {
   try {
     const { id } = req.params;
     const { participantId, itemKey } = req.body;
-    
+
     if (!participantId || !itemKey) {
       return res.status(400).json({ error: 'participantId and itemKey are required' });
     }
-    
+
     const db = getDb();
-    
+
     // Check if final_votes table exists
     const tableExists = db.prepare(
       "SELECT name FROM sqlite_master WHERE type='table' AND name='final_votes'"
     ).get();
-    
+
     if (!tableExists) {
       return res.status(500).json({ error: 'Final votes feature not available' });
     }
-    
+
     // Upsert final vote
     db.prepare(`
       INSERT INTO final_votes (id, session_id, participant_id, item_key, created_at)
       VALUES (?, ?, ?, ?, datetime('now'))
       ON CONFLICT(session_id, participant_id) DO UPDATE SET item_key = excluded.item_key, created_at = datetime('now')
     `).run(generateId(), id, participantId, itemKey);
-    
+
     // Broadcast vote update
     broadcastToSession(id, 'final_vote_cast', { participantId, itemKey });
-    
+
     // Check if all participants have voted
     const participants = db.prepare('SELECT id FROM session_participants WHERE session_id = ?').all(id) as any[];
-    const finalVotes = db.prepare('SELECT * FROM final_votes WHERE session_id = ?').all(id) as any[];
-    
-    if (finalVotes.length === participants.length) {
+    const votedCount = (db.prepare(
+      'SELECT COUNT(*) as count FROM final_votes WHERE session_id = ?'
+    ).get(id) as { count: number }).count;
+
+    if (votedCount === participants.length) {
       // All voted - determine winner
-      const voteCounts = new Map<string, number>();
-      finalVotes.forEach((v: any) => {
-        voteCounts.set(v.item_key, (voteCounts.get(v.item_key) || 0) + 1);
-      });
-      
-      // Find max votes
-      let maxVotes = 0;
-      voteCounts.forEach((count) => {
-        if (count > maxVotes) maxVotes = count;
-      });
-      
-      // Get items with max votes
-      const topItems: string[] = [];
-      voteCounts.forEach((count, itemKey) => {
-        if (count === maxVotes) topItems.push(itemKey);
-      });
-      
-      let winner: string;
-      let wasTie = false;
-      
-      if (topItems.length === 1) {
-        winner = topItems[0];
-      } else {
-        // Tie - pick random
-        wasTie = true;
-        winner = topItems[Math.floor(Math.random() * topItems.length)];
-      }
-      
-      // Update session
-      db.prepare(`
-        UPDATE sessions SET winner_item_key = ?, status = 'completed', updated_at = datetime('now')
-        WHERE id = ?
-      `).run(winner, id);
-      
-      // Record in history
-      recordSessionHistory(db, id, winner);
-      
-      // Broadcast result
-      broadcastToSession(id, 'voting_complete', { 
-        winner, 
-        wasTie, 
-        tiedItems: wasTie ? topItems : [],
-        voteCounts: Object.fromEntries(voteCounts)
-      });
-      
-      return res.json({ 
-        success: true, 
-        allVoted: true, 
-        winner, 
-        wasTie, 
-        tiedItems: wasTie ? topItems : [] 
+      const { winner, wasTie, tiedItems } = finalizeVoting(db, id);
+
+      return res.json({
+        success: true,
+        allVoted: true,
+        winner,
+        wasTie,
+        tiedItems,
       });
     }
-    
-    res.json({ success: true, allVoted: false, votedCount: finalVotes.length, totalCount: participants.length });
+
+    res.json({ success: true, allVoted: false, votedCount, totalCount: participants.length });
   } catch (error) {
     console.error('Error casting final vote:', error);
     res.status(500).json({ error: 'Failed to cast vote' });
+  }
+});
+
+// End voting early (host only) - e.g. when a participant disconnected without voting.
+// Participants with no final_votes row are simply absent from the tally.
+router.post('/:id/finish-voting', (req, res) => {
+  try {
+    const { id } = req.params;
+    const { participantId } = req.body;
+
+    if (!participantId) {
+      return res.status(400).json({ error: 'participantId is required' });
+    }
+
+    const db = getDb();
+
+    const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as any;
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    if (session.host_user_id !== participantId) {
+      return res.status(403).json({ error: 'Only the host can end voting' });
+    }
+
+    // Already decided (double click, or the last vote landed first) - report the stored winner.
+    if (session.status === 'completed' && session.winner_item_key) {
+      return res.json({ success: true, winner: session.winner_item_key, wasTie: false, tiedItems: [] });
+    }
+
+    console.log(`[Sessions] Host ended voting early for session ${id}`);
+
+    const { winner, wasTie, tiedItems } = finalizeVoting(db, id);
+
+    if (!winner) {
+      return res.status(400).json({ error: 'No votes or candidates to decide a winner' });
+    }
+
+    res.json({ success: true, winner, wasTie, tiedItems });
+  } catch (error) {
+    console.error('Error finishing voting:', error);
+    res.status(500).json({ error: 'Failed to end voting' });
   }
 });
 

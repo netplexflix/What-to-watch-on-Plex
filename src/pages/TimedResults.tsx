@@ -2,8 +2,18 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Loader2, Check, Users, Home } from "lucide-react";
+import { Loader2, Check, Users, Home, CircleSlash, SkipForward } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Logo } from "@/components/Logo";
 import { RouletteWinner } from "@/components/RouletteWinner";
 import { MatchCelebration } from "@/components/MatchCelebration";
@@ -15,7 +25,8 @@ import { wsClient } from "@/lib/websocket";
 import { getLocalSession, clearLocalSession } from "@/lib/sessionStore";
 import { toast } from "sonner";
 import { useHaptics } from "@/hooks/useHaptics";
-import type { PlexItem } from "@/types/session";
+import { cn } from "@/lib/utils";
+import { ABSTAIN_ITEM_KEY, type PlexItem } from "@/types/session";
 
 const transformToPlexItem = (item: any): PlexItem => ({
   ratingKey: item.ratingKey,
@@ -37,6 +48,17 @@ const transformToPlexItem = (item: any): PlexItem => ({
 });
 
 type PageState = 'loading' | 'voting' | 'waiting' | 'roulette' | 'winner' | 'error';
+
+// Without any full matches the vote falls back to the most-liked items, and only this many are shown.
+// Full matches are never capped - a match target above six promises that many candidates.
+// Keep in sync with TOP_LIKED_LIMIT in server/src/routes/sessions.ts.
+const TOP_LIKED_LIMIT = 6;
+
+const getVotingItems = (
+  matches: PlexItem[],
+  topLiked: { item: PlexItem; likeCount: number }[]
+): PlexItem[] =>
+  matches.length > 0 ? matches : topLiked.slice(0, TOP_LIKED_LIMIT).map((t) => t.item);
 
 const TimedResults = () => {
   const navigate = useNavigate();
@@ -61,12 +83,15 @@ const TimedResults = () => {
   // Trailers appear on the voting cards in both 'on' and 'voting' modes.
   const [enableTrailers, setEnableTrailers] = useState(false);
   const [isMatchTargetSession, setIsMatchTargetSession] = useState(false);
-  
+  const [isTimedSession, setIsTimedSession] = useState(false);
+  const [matchTarget, setMatchTarget] = useState(0);
+  const [showFinishConfirm, setShowFinishConfirm] = useState(false);
+  const [isFinishing, setIsFinishing] = useState(false);
+
   // Warm trailer availability for the voting cards so the button appears without delay.
   useEffect(() => {
     if (!enableTrailers) return;
-    const items = matches.length > 0 ? matches : topLiked.map((t) => t.item);
-    prefetchTrailers(items.slice(0, 6).map((i) => i.ratingKey));
+    prefetchTrailers(getVotingItems(matches, topLiked).map((i) => i.ratingKey));
   }, [enableTrailers, matches, topLiked]);
 
   const mediaMapRef = useRef<Map<string, any>>(new Map());
@@ -109,7 +134,9 @@ const TimedResults = () => {
         .map(key => findItemByKey(key))
         .filter((item): item is PlexItem => item !== null);
       
-      if (tiedPlexItems.length > 1) {
+      // Only spin if the winner itself resolved - otherwise the reel would land on a
+      // poster that didn't win and the caption underneath would render empty.
+      if (tiedPlexItems.length > 1 && tiedPlexItems.some(item => item.ratingKey === data.winner)) {
         setRouletteItems(tiedPlexItems);
         setRouletteWinner(data.winner);
         setPageState('roulette');
@@ -182,6 +209,12 @@ const TimedResults = () => {
         // Detect if this is a match target session
         if (session.match_target && session.match_target > 0) {
           setIsMatchTargetSession(true);
+          setMatchTarget(session.match_target);
+        }
+
+        // Detect if this is a timed session (both can be true for timed+target)
+        if (session.timed_duration && session.timed_duration > 0) {
+          setIsTimedSession(true);
         }
 
         let mediaItems: any[] = [];
@@ -214,8 +247,8 @@ const TimedResults = () => {
           console.warn('[TimedResults] WebSocket connection failed:', wsError);
         }
 
-        let loadedMatches: PlexItem[] = [];
-        let loadedTopLiked: { item: PlexItem; likeCount: number }[] = [];
+        const loadedMatches: PlexItem[] = [];
+        const loadedTopLiked: { item: PlexItem; likeCount: number }[] = [];
         
         try {
           const matchesResult = await sessionsApi.getMatches(session.id);
@@ -401,6 +434,44 @@ const TimedResults = () => {
     }
   };
 
+  const finishVoting = useCallback(async () => {
+    if (!sessionId || !localSession) return;
+    if (isFinishing) return;
+
+    setIsFinishing(true);
+    haptics.medium();
+
+    try {
+      const { data, error } = await sessionsApi.finishVoting(sessionId, localSession.participantId);
+
+      if (error) throw new Error(error);
+
+      if (data?.winner && !hasHandledResultRef.current) {
+        handleVotingResult({
+          winner: data.winner,
+          wasTie: data.wasTie || false,
+          tiedItems: data.tiedItems,
+        });
+      }
+    } catch (error) {
+      haptics.error();
+      console.error("[TimedResults] Error ending voting:", error);
+      toast.error("Failed to end voting");
+    } finally {
+      setIsFinishing(false);
+    }
+  }, [sessionId, localSession, isFinishing, haptics, handleVotingResult]);
+
+  const handleContinueClick = () => {
+    // Everyone already voted - the result is on its way, no need to warn about anything.
+    if (votingStatus.total > 0 && votingStatus.voted >= votingStatus.total) {
+      finishVoting();
+      return;
+    }
+    haptics.selection();
+    setShowFinishConfirm(true);
+  };
+
   const handleRouletteComplete = useCallback(() => {
     const winner = rouletteItems.find(item => item.ratingKey === rouletteWinner);
     if (winner) {
@@ -510,8 +581,17 @@ const TimedResults = () => {
     );
   }
 
-  const itemsToShow = matches.length > 0 ? matches : topLiked.map(t => t.item);
+  const itemsToShow = getVotingItems(matches, topLiked);
   const isMatchMode = matches.length > 0;
+
+  // A timed+target session can end either way, so report what actually happened.
+  const targetWasReached =
+    isMatchTargetSession && matchTarget > 0 && matches.length >= matchTarget;
+  const endReasonHeading = isTimedSession && !targetWasReached
+    ? "Time's Up! 🎉"
+    : isMatchTargetSession
+      ? "Target Reached! 🎯"
+      : "Time's Up! 🎉";
 
   if (itemsToShow.length === 0) {
     return (
@@ -546,9 +626,7 @@ const TimedResults = () => {
           className="text-center mb-4"
         >
           <h1 className="text-xl font-bold text-foreground mb-1">
-            {isMatchMode 
-              ? (isMatchTargetSession ? "Target Reached! 🎯" : "Time's Up! 🎉")
-              : "Session Complete"}
+            {isMatchMode ? endReasonHeading : "Session Complete"}
           </h1>
           <p className="text-sm text-muted-foreground">
             {isMatchMode 
@@ -574,7 +652,7 @@ const TimedResults = () => {
         </div>
 
         <div className="grid grid-cols-2 gap-3 mb-4 max-w-sm mx-auto w-full flex-1 content-start">
-          {itemsToShow.slice(0, 6).map((item, index) => (
+          {itemsToShow.map((item, index) => (
             <FlippableCard
               key={item.ratingKey}
               item={item}
@@ -587,6 +665,28 @@ const TimedResults = () => {
             />
           ))}
         </div>
+
+        {/* Blank vote - selected like a poster, confirmed with the same Cast Vote button */}
+        <button
+          type="button"
+          onClick={() => {
+            if (hasVoted) return;
+            haptics.selection();
+            handleSelectItem(ABSTAIN_ITEM_KEY);
+          }}
+          disabled={hasVoted}
+          className={cn(
+            "w-full max-w-sm mx-auto mb-4 flex items-center justify-center gap-2 rounded-xl px-4 py-3",
+            "glass-card text-sm font-medium text-muted-foreground transition-all duration-200",
+            selectedItem === ABSTAIN_ITEM_KEY
+              ? "ring-4 ring-primary ring-offset-2 ring-offset-background text-foreground"
+              : "hover:text-foreground",
+            hasVoted && selectedItem !== ABSTAIN_ITEM_KEY && "opacity-40"
+          )}
+        >
+          {selectedItem === ABSTAIN_ITEM_KEY ? <Check size={16} /> : <CircleSlash size={16} />}
+          No preference
+        </button>
 
         <div className="mt-auto">
           {pageState === 'voting' && !hasVoted ? (
@@ -603,10 +703,45 @@ const TimedResults = () => {
               <p className="text-sm text-muted-foreground">
                 Waiting for others to vote...
               </p>
+              {isHost && (
+                <Button
+                  onClick={handleContinueClick}
+                  disabled={isFinishing}
+                  variant="outline"
+                  className="w-full max-w-sm mx-auto mt-4 h-11 font-semibold border-secondary text-foreground hover:bg-secondary flex"
+                >
+                  {isFinishing ? (
+                    <>
+                      <Loader2 className="mr-2 animate-spin" size={18} />
+                      Ending vote...
+                    </>
+                  ) : (
+                    <>
+                      <SkipForward size={18} className="mr-2" />
+                      Continue
+                    </>
+                  )}
+                </Button>
+              )}
             </div>
           )}
         </div>
       </div>
+
+      <AlertDialog open={showFinishConfirm} onOpenChange={setShowFinishConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Not everyone has voted yet</AlertDialogTitle>
+            <AlertDialogDescription>
+              {votingStatus.voted} of {votingStatus.total} have voted. Are you sure you want to continue?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>No</AlertDialogCancel>
+            <AlertDialogAction onClick={() => finishVoting()}>Yes</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };

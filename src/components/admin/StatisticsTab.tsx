@@ -31,7 +31,7 @@ interface StatsResponse {
   range: { amount: number; unit: string; fromISO: string; toISO: string };
   kpis: { totalSessions: number; uniqueParticipants: number; avgParticipantsPerSession: number };
   activity: Array<{ bucketStartISO: string; count: number }>;
-  sessionTypes: { classic: number; timed: number; target: number };
+  sessionTypes: { classic: number; timed: number; target: number; timed_target: number };
   mediaTypes: Record<string, number>;
   participantDistribution: Record<string, number>;
   topParticipants: Array<{ name: string; count: number }>;
@@ -42,6 +42,14 @@ const SESSION_TYPE_COLORS: Record<string, string> = {
   classic: "hsl(var(--primary))",
   timed: "hsl(var(--accent))",
   target: "hsl(var(--destructive))",
+  timed_target: "hsl(var(--muted-foreground))",
+};
+
+const SESSION_TYPE_LABELS: Record<string, string> = {
+  classic: "Classic",
+  timed: "Timed",
+  target: "Target",
+  timed_target: "Timed + Target",
 };
 
 const MEDIA_TYPE_PALETTE = [
@@ -139,8 +147,8 @@ export const StatisticsTab = () => {
 
   const sessionTypeData = useMemo(() => {
     if (!stats) return [];
-    return (["classic", "timed", "target"] as const)
-      .map((k) => ({ name: k, value: stats.sessionTypes[k] }))
+    return (["classic", "timed", "target", "timed_target"] as const)
+      .map((k) => ({ name: k, value: stats.sessionTypes[k] ?? 0 }))
       .filter((d) => d.value > 0);
   }, [stats]);
 
@@ -163,6 +171,7 @@ export const StatisticsTab = () => {
   const mediaTotal = mediaTypeData.reduce((a, b) => a + b.value, 0);
   const participantDistTotal = participantDistData.reduce((a, b) => a + b.value, 0);
   const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+  const sessionTypeLabel = (s: string) => SESSION_TYPE_LABELS[s] || cap(s);
   const pct = (v: number, total: number) => (total > 0 ? Math.round((v / total) * 100) : 0);
 
   return (
@@ -289,7 +298,7 @@ export const StatisticsTab = () => {
                         paddingAngle={2}
                         label={makePieLabel(
                           (name, value) =>
-                            `${cap(name)}: ${value}x (${pct(value, sessionTotal)}%)`
+                            `${sessionTypeLabel(name)}: ${value}x (${pct(value, sessionTotal)}%)`
                         )}
                         labelLine={{ stroke: "hsl(var(--muted-foreground))" }}
                       >
@@ -308,7 +317,7 @@ export const StatisticsTab = () => {
                         itemStyle={{ color: "hsl(var(--popover-foreground))" }}
                         labelStyle={{ color: "hsl(var(--popover-foreground))" }}
                         formatter={(value: number, name: string) =>
-                          [`${value} (${pct(value, sessionTotal)}%)`, cap(name)]
+                          [`${value} (${pct(value, sessionTotal)}%)`, sessionTypeLabel(name)]
                         }
                       />
                     </PieChart>

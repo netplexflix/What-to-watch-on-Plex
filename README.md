@@ -11,8 +11,8 @@ Self hosted with Docker. Available on the Unraid Community Apps store.
 
 <p align="center">
 <img src="https://github.com/user-attachments/assets/cf67e242-ca3e-47c9-9096-7cc71061ae4b" width="20%"><br>
-<img src="https://github.com/user-attachments/assets/47c7585e-f46f-4edd-9c60-90753c50eefc" width="15%"></img> <img src="https://github.com/user-attachments/assets/4a5cebce-64b2-486f-a345-612aeb1d82db" width="15%"></img> <img src="https://github.com/user-attachments/assets/ce7a1c07-e648-48d2-87c8-f029b277e799" width="15%"></img> <img src="https://github.com/user-attachments/assets/c819dae4-eb40-4266-9d3b-e8cfa97ba542" width="15%"></img><br>
-<img src="https://github.com/user-attachments/assets/21d1bff0-0645-47e7-898b-104e29150703" width="15%"></img> <img src="https://github.com/user-attachments/assets/3fcda72a-d2aa-4fb6-9557-fbc798fd23c9" width="15%"></img> <img src="https://github.com/user-attachments/assets/f92988c8-82d8-4a4e-b85d-d406c6cbd328" width="15%"></img> <img src="https://github.com/user-attachments/assets/e36d1b22-381d-48a0-927f-5d78075c53d7" width="15%"></img><br>
+<img src="https://github.com/user-attachments/assets/47c7585e-f46f-4edd-9c60-90753c50eefc" width="15%"></img> <img src="https://github.com/user-attachments/assets/cedba413-a8d7-4e95-bb13-f1dd8f990f64" width="15%"></img> <img src="https://github.com/user-attachments/assets/ce7a1c07-e648-48d2-87c8-f029b277e799" width="15%"></img> <img src="https://github.com/user-attachments/assets/c819dae4-eb40-4266-9d3b-e8cfa97ba542" width="15%"></img><br>
+<img src="https://github.com/user-attachments/assets/21d1bff0-0645-47e7-898b-104e29150703" width="15%"></img> <img src="https://github.com/user-attachments/assets/3fcda72a-d2aa-4fb6-9557-fbc798fd23c9" width="15%"></img> <img src="https://github.com/user-attachments/assets/6b8888e4-e981-434c-98d8-118654f3e68c" width="15%"></img> <img src="https://github.com/user-attachments/assets/c5f60579-b2ec-4526-ab66-eb585d818c1c" width="15%"></img><br>
 <img src="https://github.com/user-attachments/assets/ba47b6c4-f5ac-4c3c-a24b-549be4d2c7ff" width="15%"></img> <img src="https://github.com/user-attachments/assets/e44b0cd9-aa89-46a1-ac52-4f45feeb6288" width="15%"></img> <img src="https://github.com/user-attachments/assets/7795d06d-57e2-40a1-a366-4f4be14fa4d2" width="15%"></img> <img src="https://github.com/user-attachments/assets/04631cc9-1a16-483c-a7cd-1d9542a29e68" width="15%"></img>
 </p> 
 
@@ -28,16 +28,18 @@ Main Features:
 - Optionally filter suggestions by `Collections`.<br> Want to decide on which Christmas movie to watch? Select your Christmas collection and start a session!
 - Optionally start a session from your `watchlist` items.
 - Include or Exclude items based on `Labels`.
-- Users set preferences for `Genre`, `Era` and `Language` to narrow down the suggestions. Tap once to prefer, twice to exclude.
+- Users optionally set preferences for `Genre`, `Era`, `Duration`, `Language` and `Minimum Rating` to narrow down the suggestions. Tap once to prefer, twice to exclude.
 - Flip cards over for details, Swipe left for Nope and right for Yes.
 - Optionally watch `Trailers` streamed straight from your Plex server.
 - Use your own `custom logo` on the landing page.
 - Admin panel for Settings and a `Session History` tab.
 - Choose between `Random` or `Fixed` suggestion order.
-- Three Session Modes:
+- Four Session Modes:
   - `Classic`: Swipe until you have a match liked by everyone.
   - `Timed`: Swipe for chosen amount of time and vote for the best matches. Includes a tie breaker.
   - `Match Target`: Swipe until chosen amount of matches are made and vote on them. Includes a tie breaker.
+  - `Timed + Target`: Set both a duration and a match target. The session ends whichever happens first, then everyone votes on the collected matches. Includes a tie breaker.
+- Optionally limit who can create sessions: `Plex users only` and/or a `session password`.
 - Installable as PWA 
 
 ---
@@ -95,24 +97,35 @@ Equivalent to the `CORS_ORIGINS` environment variable, but managed at runtime wi
 - **Auto Refresh:** Automatically refresh your cache at 3AM.
 - **Custom Logo:** Upload your custom logo to be used on the landing page.
 - **Selection Limits:** Choose how many `Preferences` and `Exclusions` users can set.
-> [!NOTE]
-> `Preferences` are seen just that. If user1 sets preference for `comedy` and user2 sets preference for `action` then the app will first try to find items with both genres, and otherwise suggests a mix of both.<br>
-> `Exclusions` are seen as hard limits. If a user marks `horror` in red, then no horror will be suggested at all.
+- **Question Stages:** Enable or disable the questions individually. A disabled question is treated as if everyone answered "I don't mind", so it simply doesn't narrow the suggestions. Disabling all of them skips the questionnaire entirely and takes users straight from the lobby to swiping.
+- **Minimum Rating question:** When enabled, users pick a minimum rating (`6+` to `8.5+`) after the language question. It is compared against the rating source chosen in `Rating Display` (in `Both` mode an item passes if either rating qualifies). Unrated items are not removed.
 - **Suggestion Order:**
   - `Random` (suggestions appear randomly for each user).
   - `Fixed` (everyone gets the same suggestions in the same order).
-- **Hard Filter Preferences:** When enabled, preferred selections (green) strictly filter results. When disabled, preferences boost item priority but non-matching items may still appear.
+- **Hard Filter Preferences:** When enabled, preferred selections (green) strictly filter results: only matching items are suggested. When disabled, preferred items simply sort to the top of the deck.
+- **Hard Filter Exclusions:** When enabled, excluded selections (red) strictly filter results: excluded items are never suggested. When disabled, excluded items simply sort to the bottom of the deck.
+> [!NOTE]
+> `Preferences` are seen just that. If user1 sets preference for `comedy` and user2 sets preference for `action` then the app will first try to find items with both genres, and otherwise suggests a mix of both.<br>
+> Votes count. Every pick is weighed separately, so an item matching three people's preferences is suggested before one matching a single pick, and a genre three people picked outweighs a genre only one person picked. The same applies to every question (genre, era, runtime, language, minimum rating).<br>
+With `Hard Filter Exclusions` on, if a user marks `horror` in red, then no horror will be suggested at all. With it turned off, it will simply score items with `horror` lower and send them to the back of the deck.
 - **Collections:** Enable a collection picker for the host when creating a session. Only items from selected collections will be suggested.
 - **Open in Plex Button:** Enables a button on the match winner page to open the item in Plex. Only works by opening Plex in a browser tab.
 - **Lobby QR Code:** Display a QR code in the lobby for easy session joining.
-- **Rating Display:** Choose whether detail cards show `Critic Rating`, `Audience Rating`or `both`.
+- **Rating Display:** Choose whether detail cards show `Critic Rating`, `Audience Rating` or `both`. The same choice decides which rating the `Minimum Rating` question compares against.
 - **Trailers:** Add a `Watch Trailer` button to cards. Trailers are streamed from your Plex server. Three modes:
   - `Off` (default): no trailer button.
   - `On`: trailer button on detail cards
-  - `Voting only`: trailer button appears **only** on the voting cards at the end of `Timed` and `Match Target` sessions — so swiping stays fast, but everyone can watch the trailers of the matched items before casting their final vote.
+  - `Voting only`: trailer button appears **only** on the voting cards at the end of `Timed`, `Match Target` and `Timed + Target` sessions — so swiping stays fast, but everyone can watch the trailers of the matched items before casting their final vote.
 > [!TIP]
 > Missing trailers for certain items? Take a look at [MTDP](https://github.com/netplexflix/Missing-Trailer-Downloader-For-Plex) (Missing Trailer Downloader for Plex)
 - **Label Restrictions:** Include or Exclude items based on Plex labels.
+- **Require Plex Server Access:** Only allow users who log in with Plex and have access to your Plex server to use the app at all. Guests are blocked from creating *and* joining.
+- **Session Creation:** Limit who can *start* a session. Joining an existing session is unaffected. Two independent restrictions:
+  - `Plex users only`: only users signed in with Plex oAuth who have access to your server can create a session.
+  - `Password protected`: users need a password to create a session. This password is set here and is **separate from the admin panel password**.
+> [!NOTE]
+> Both restrictions can be enabled at the same time, in which case a user needs to satisfy **both** to create a session.<br>
+> Enabling `Password protected` without setting a password leaves creation open, so you can't lock yourself out.
 - **PWA Customization:** Customize the PWA name and icon.
 
 ---
@@ -125,14 +138,13 @@ The current version of Swiparr meanwhile *does* support Plex as well, but not al
 |---|:---:|:---:|
 | Multi-media-server support | ❌<br><sub>(Plex only)</sub> | ✅<br><sub>(Jellyfin/Emby/Plex/TMDB)</sub> |
 | TV show support | ✅ | ❌ |
-| Timed mode / Match-Target session modes + tie-breaker | ✅ | ❌ |
+| Timed / Match-Target / Timed+Target session modes + tie-breaker | ✅ | ❌ |
 | Trailer playback | ✅ | ❌ |
 | Plex oAuth login guard | ✅ | ❌ |
 | User Watched-items auto-exclusion | ✅ | ❌ |
-| Group preference questionnaire filters (genre/era/language) | ✅ | ❌ |
+| Group preference questionnaire filters (genre/era/runtime/language/minimum rating) | ✅ | ❌ |
 | Plex Label filters | ✅ | ❌ |
 | Streaming-availability ("where to watch") filter | ❌ | ✅ |
-| Runtime & minimum-rating filters | ❌ | ✅ |
 | Sort by Trending / Popular | ❌ | ✅ |
 | Customizable (logo + PWA name and icon) | ✅ | ❌ |
 | Suggest from Watchlist and/or Collections | ✅ | ❌ |

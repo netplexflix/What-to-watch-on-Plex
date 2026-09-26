@@ -2,12 +2,13 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { ArrowLeft, User, LogIn, Check, Loader2, Clock, Minus, Plus, Infinity, Timer, List, Library, Target } from "lucide-react";
+import { ArrowLeft, User, LogIn, Check, Loader2, Clock, Minus, Plus, Infinity as InfinityIcon, Timer, List, Library, Target } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Logo } from "@/components/Logo";
 import { MediaTypeSelector } from "@/components/MediaTypeSelector";
-import { plexApi, sessionsApi } from "@/lib/api";
+import { adminApi, plexApi, sessionsApi } from "@/lib/api";
 import { saveLocalSession } from "@/lib/sessionStore";
 import { saveUserIdentity, getUserIdentity, clearUserIdentity, validatePlexToken } from "@/lib/userStore";
 import type { PlexUser } from "@/lib/userStore";
@@ -15,15 +16,49 @@ import { toast } from "sonner";
 import { useHaptics } from "@/hooks/useHaptics";
 import { usePlexOAuth } from "@/hooks/usePlexOAuth";
 import { useAccessGate } from "@/hooks/useAccessGate";
+import { useCreateGate, getCreatePassword, clearCreatePassword } from "@/hooks/useCreateGate";
 import { cn } from "@/lib/utils";
+
+type SessionMode = "classic" | "timed" | "match_target" | "timed_target";
+
+const SESSION_MODES: {
+  value: SessionMode;
+  label: string;
+  description: string;
+  icons: LucideIcon[];
+}[] = [
+  { value: "classic", label: "Classic", description: "First match wins", icons: [InfinityIcon] },
+  { value: "timed", label: "Timed", description: "Collect & vote", icons: [Timer] },
+  { value: "match_target", label: "Target", description: "X matches & vote", icons: [Target] },
+  {
+    value: "timed_target",
+    label: "Timed + Target",
+    description: "First to happen",
+    icons: [Timer, Target],
+  },
+];
 
 const CreateSession = () => {
   const navigate = useNavigate();
   const haptics = useHaptics();
   const { gated, verifying: gateVerifying, hasAccess } = useAccessGate();
+  const {
+    requirePlex: createRequiresPlex,
+    requirePassword: createRequiresPassword,
+    plexOk: createPlexOk,
+    verifying: createGateVerifying,
+  } = useCreateGate();
   const [displayName, setDisplayName] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [joinAsGuest, setJoinAsGuest] = useState(true);
+
+  // Caption under the Plex Login button reflects the admin's Filter Watched Items setting.
+  const [filterWatchedEnabled, setFilterWatchedEnabled] = useState(true);
+  useEffect(() => {
+    adminApi.getSessionSettings()
+      .then(({ data }) => setFilterWatchedEnabled(data?.settings?.filter_watched_items ?? true))
+      .catch(() => { /* keep the default */ });
+  }, []);
 
   // If access is gated and this user isn't verified, bounce back to the wall on `/`.
   useEffect(() => {
@@ -32,16 +67,27 @@ const CreateSession = () => {
     }
   }, [gateVerifying, gated, hasAccess, navigate]);
 
-  // When the gate is on, Plex sign-in is mandatory — never default to guest.
+  // Creation restrictions are enforced server-side too; this just avoids a dead-end form.
   useEffect(() => {
-    if (gated) setJoinAsGuest(false);
-  }, [gated]);
+    if (createGateVerifying) return;
+    if (createRequiresPlex && !createPlexOk) {
+      navigate("/", { replace: true });
+      return;
+    }
+    if (createRequiresPassword && !getCreatePassword()) {
+      navigate("/", { replace: true });
+    }
+  }, [createGateVerifying, createRequiresPlex, createPlexOk, createRequiresPassword, navigate]);
+
+  // When either gate demands Plex, sign-in is mandatory — never default to guest.
+  const plexRequired = gated || createRequiresPlex;
+  useEffect(() => {
+    if (plexRequired) setJoinAsGuest(false);
+  }, [plexRequired]);
   const [mediaType, setMediaType] = useState<"movies" | "shows" | "both">(
     "movies"
   );
-  const [sessionMode, setSessionMode] = useState<"classic" | "timed" | "match_target">(
-    "classic"
-  );
+  const [sessionMode, setSessionMode] = useState<SessionMode>("classic");
   const [timedMinutes, setTimedMinutes] = useState(5);
   const [matchTargetCount, setMatchTargetCount] = useState(3);
   const [useWatchlist, setUseWatchlist] = useState(false);
@@ -145,6 +191,7 @@ const CreateSession = () => {
         timedDuration?: number;
         matchTarget?: number;
         useWatchlist?: boolean;
+        createPassword?: string;
       } = {
         mediaType,
         displayName: displayName.trim(),
@@ -155,12 +202,17 @@ const CreateSession = () => {
         createData.plexToken = plexToken;
       }
 
-      if (sessionMode === "timed") {
+      if (sessionMode === "timed" || sessionMode === "timed_target") {
         createData.timedDuration = timedMinutes;
       }
 
-      if (sessionMode === "match_target") {
+      if (sessionMode === "match_target" || sessionMode === "timed_target") {
         createData.matchTarget = matchTargetCount;
+      }
+
+      const storedCreatePassword = getCreatePassword();
+      if (storedCreatePassword) {
+        createData.createPassword = storedCreatePassword;
       }
 
       if (useWatchlist && plexToken && watchlistCount && watchlistCount > 0) {
@@ -191,12 +243,18 @@ const CreateSession = () => {
         isHost: true,
       });
 
+      clearCreatePassword();
+
       haptics.success();
       navigate(`/lobby/${data.session.code}`);
     } catch (error) {
       console.error("Error creating session:", error);
       haptics.error();
-      toast.error("Failed to create session. Please try again.");
+      toast.error(
+        error instanceof Error && error.message
+          ? error.message
+          : "Failed to create session. Please try again."
+      );
     } finally {
       setIsCreating(false);
     }
@@ -221,7 +279,7 @@ const CreateSession = () => {
     }
   };
 
-  const handleSessionModeChange = (mode: "classic" | "timed" | "match_target") => {
+  const handleSessionModeChange = (mode: SessionMode) => {
     haptics.selection();
     setSessionMode(mode);
   };
@@ -357,7 +415,7 @@ const CreateSession = () => {
               </div>
             </div>
 
-            {gated ? (
+            {plexRequired ? (
               <div className="glass-card border-2 border-primary/30 rounded-xl p-4 flex items-center gap-3">
                 <LogIn className="text-primary shrink-0" size={20} />
                 <div className="text-left">
@@ -438,7 +496,9 @@ const CreateSession = () => {
                       ? "Connecting..."
                       : plexUser
                         ? "Signed in ✓"
-                        : "Filter watched"}
+                        : filterWatchedEnabled
+                          ? "Filter watched"
+                          : "Sign in with Plex"}
                   </p>
                 </button>
               </div>
@@ -542,95 +602,49 @@ const CreateSession = () => {
               <label className="text-sm font-medium text-foreground">
                 Session Mode
               </label>
-              <div className="grid grid-cols-3 gap-2">
-                <button
-                  onClick={() => handleSessionModeChange("classic")}
-                  className={cn(
-                    "relative p-3 rounded-xl transition-all duration-200",
-                    sessionMode === "classic"
-                      ? "glass-card border-2 border-primary glow-primary"
-                      : "glass-card border-2 border-transparent hover:border-muted-foreground/30"
-                  )}
-                >
-                  {sessionMode === "classic" && (
-                    <div className="absolute top-1.5 right-1.5 w-4 h-4 rounded-full bg-primary flex items-center justify-center">
-                      <Check size={10} className="text-primary-foreground" />
-                    </div>
-                  )}
-                  <Infinity
-                    className={cn(
-                      "mx-auto mb-1.5",
-                      sessionMode === "classic"
-                        ? "text-primary"
-                        : "text-muted-foreground"
-                    )}
-                    size={22}
-                  />
-                  <p className="font-medium text-foreground text-xs">Classic</p>
-                  <p className="text-[10px] text-muted-foreground text-center leading-tight">
-                    First match wins
-                  </p>
-                </button>
-                <button
-                  onClick={() => handleSessionModeChange("timed")}
-                  className={cn(
-                    "relative p-3 rounded-xl transition-all duration-200",
-                    sessionMode === "timed"
-                      ? "glass-card border-2 border-primary glow-primary"
-                      : "glass-card border-2 border-transparent hover:border-muted-foreground/30"
-                  )}
-                >
-                  {sessionMode === "timed" && (
-                    <div className="absolute top-1.5 right-1.5 w-4 h-4 rounded-full bg-primary flex items-center justify-center">
-                      <Check size={10} className="text-primary-foreground" />
-                    </div>
-                  )}
-                  <Timer
-                    className={cn(
-                      "mx-auto mb-1.5",
-                      sessionMode === "timed"
-                        ? "text-primary"
-                        : "text-muted-foreground"
-                    )}
-                    size={22}
-                  />
-                  <p className="font-medium text-foreground text-xs">Timed</p>
-                  <p className="text-[10px] text-muted-foreground text-center leading-tight">
-                    Collect & vote
-                  </p>
-                </button>
-                <button
-                  onClick={() => handleSessionModeChange("match_target")}
-                  className={cn(
-                    "relative p-3 rounded-xl transition-all duration-200",
-                    sessionMode === "match_target"
-                      ? "glass-card border-2 border-primary glow-primary"
-                      : "glass-card border-2 border-transparent hover:border-muted-foreground/30"
-                  )}
-                >
-                  {sessionMode === "match_target" && (
-                    <div className="absolute top-1.5 right-1.5 w-4 h-4 rounded-full bg-primary flex items-center justify-center">
-                      <Check size={10} className="text-primary-foreground" />
-                    </div>
-                  )}
-                  <Target
-                    className={cn(
-                      "mx-auto mb-1.5",
-                      sessionMode === "match_target"
-                        ? "text-primary"
-                        : "text-muted-foreground"
-                    )}
-                    size={22}
-                  />
-                  <p className="font-medium text-foreground text-xs">Target</p>
-                  <p className="text-[10px] text-muted-foreground text-center leading-tight">
-                    X matches & vote
-                  </p>
-                </button>
+              <div className="grid grid-cols-4 gap-1.5">
+                {SESSION_MODES.map(({ value, label, description, icons }) => {
+                  const isSelected = sessionMode === value;
+                  return (
+                    <button
+                      key={value}
+                      onClick={() => handleSessionModeChange(value)}
+                      className={cn(
+                        "relative p-2 rounded-xl transition-all duration-200",
+                        isSelected
+                          ? "glass-card border-2 border-primary glow-primary"
+                          : "glass-card border-2 border-transparent hover:border-muted-foreground/30"
+                      )}
+                    >
+                      {isSelected && (
+                        <div className="absolute top-1 right-1 w-3.5 h-3.5 rounded-full bg-primary flex items-center justify-center">
+                          <Check size={8} className="text-primary-foreground" />
+                        </div>
+                      )}
+                      <div className="flex items-center justify-center gap-0.5 mb-1">
+                        {icons.map((Icon, i) => (
+                          <Icon
+                            key={i}
+                            className={cn(
+                              isSelected ? "text-primary" : "text-muted-foreground"
+                            )}
+                            size={icons.length > 1 ? 15 : 18}
+                          />
+                        ))}
+                      </div>
+                      <p className="font-medium text-foreground text-[11px] leading-tight">
+                        {label}
+                      </p>
+                      <p className="text-[9px] text-muted-foreground text-center leading-tight">
+                        {description}
+                      </p>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
-            {sessionMode === "timed" && (
+            {(sessionMode === "timed" || sessionMode === "timed_target") && (
               <motion.div
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: "auto" }}
@@ -682,7 +696,7 @@ const CreateSession = () => {
               </motion.div>
             )}
 
-            {sessionMode === "match_target" && (
+            {(sessionMode === "match_target" || sessionMode === "timed_target") && (
               <motion.div
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: "auto" }}

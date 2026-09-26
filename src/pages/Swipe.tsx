@@ -11,6 +11,12 @@ import { wsClient } from "@/lib/websocket";
 import { getLocalSession } from "@/lib/sessionStore";
 import { prefetchImages } from "@/lib/imagePrefetch";
 import { prefetchTrailers } from "@/lib/trailerCache";
+import {
+  aggregateMinRatings,
+  countMetMinRatings,
+  effectiveRatings,
+  type RatingDisplay,
+} from "@/lib/ratingFilter";
 import { toast } from "sonner";
 import { useHaptics } from "@/hooks/useHaptics";
 import type { PlexItem, Participant } from "@/types/session";
@@ -62,7 +68,8 @@ function itemMatchesGenres(itemGenres: string[], preferredGenres: string[]): boo
   return false;
 }
 
-// Count how many preferred genres an item matches
+// Count how many of the group's genre picks an item matches. The list holds one entry per
+// participant, so a genre three people picked counts three times. Also used for exclusions.
 function countMatchingGenres(itemGenres: string[], preferredGenres: string[]): number {
   if (preferredGenres.length === 0) return 0;
   
@@ -94,50 +101,45 @@ function countMatchingGenres(itemGenres: string[], preferredGenres: string[]): n
   return matchCount;
 }
 
-// Check if an item's genres match any excluded genres
-function itemMatchesExcludedGenres(itemGenres: string[], excludedGenres: string[]): boolean {
-  if (excludedGenres.length === 0) return false;
-  
-  const normalizedItemGenres = itemGenres.map(normalizeGenre);
-  
-  for (const excluded of excludedGenres) {
-    if (normalizedItemGenres.includes(normalizeGenre(excluded))) {
-      return true;
-    }
-    
-    const aliases = GENRE_ALIASES[excluded] || [];
-    for (const alias of aliases) {
-      if (normalizedItemGenres.includes(normalizeGenre(alias))) {
-        return true;
-      }
-    }
-  }
-  
-  return false;
-}
-
 // Normalize language for comparison
 function normalizeLanguage(lang: string): string {
   return lang.toLowerCase().trim();
 }
 
-// Check if item languages match preferred languages
-function itemMatchesLanguages(itemLanguages: string[], preferredLanguages: string[]): boolean {
-  if (preferredLanguages.length === 0) return true;
-  if (itemLanguages.length === 0) return false;
-  
-  const normalizedItemLangs = itemLanguages.map(normalizeLanguage);
-  
-  for (const preferred of preferredLanguages) {
-    if (normalizedItemLangs.includes(normalizeLanguage(preferred))) {
-      return true;
-    }
+// How many individual exclusions an item trips across the four questions. Single source of
+// truth for both hard mode (drop when > 0) and soft mode (penalise proportionally), so the
+// two can't drift. Each red pick counts separately — the mirror of how scoreItem counts
+// green picks — so an item matching three excluded genres sinks below one matching a single
+// pick. Reuses the preference counters: they normalize and alias-match identically, and
+// countMatchingGenres(...) > 0 is exactly the old "does this item match any excluded genre",
+// so hard mode keeps the behavior it has always had.
+// An item missing the attribute isn't excluded — same leniency as the preference filter.
+function countMatchedExclusions(item: any, filters: any): number {
+  const itemGenres = item.genres || [];
+  const year = item.year;
+  const itemLanguages = item.languages || [];
+  let count = 0;
+
+  if (filters.excludedGenres && filters.excludedGenres.length > 0) {
+    count += countMatchingGenres(itemGenres, filters.excludedGenres);
   }
-  
-  return false;
+
+  if (filters.excludedEras && filters.excludedEras.length > 0 && year) {
+    count += countMatchingEras(year, filters.excludedEras);
+  }
+
+  if (filters.excludedRuntimes && filters.excludedRuntimes.length > 0 && item.duration) {
+    count += countMatchingRuntimes(item.duration, filters.excludedRuntimes);
+  }
+
+  if (filters.excludedLanguages && filters.excludedLanguages.length > 0 && itemLanguages.length > 0) {
+    count += countMatchingLanguages(itemLanguages, filters.excludedLanguages);
+  }
+
+  return count;
 }
 
-// Count how many preferred languages an item matches
+// Count how many of the group's language picks an item matches (one entry per participant)
 function countMatchingLanguages(itemLanguages: string[], preferredLanguages: string[]): number {
   if (preferredLanguages.length === 0 || itemLanguages.length === 0) return 0;
   
@@ -153,7 +155,8 @@ function countMatchingLanguages(itemLanguages: string[], preferredLanguages: str
   return matchCount;
 }
 
-// Count how many preferred eras an item matches
+// Count how many of the group's era picks an item matches (one entry per participant, and
+// eras overlap, so a 2024 title can match "6months", "2years" and "2020s" from one person)
 function countMatchingEras(year: number, preferredEras: string[]): number {
   if (preferredEras.length === 0 || !year) return 0;
   
@@ -192,7 +195,6 @@ function matchesEra(year: number, era: string): boolean {
   switch (era) {
     case '6months': return year >= sixMonthsAgoYear && year <= currentYear;
     case '2years': return year >= currentYear - 2;
-    case 'recent': return year >= currentYear - 2; // Keep for backwards compatibility
     case '2020s': return year >= 2020;
     case '2010s': return year >= 2010 && year < 2020;
     case '2000s': return year >= 2000 && year < 2010;
@@ -203,8 +205,37 @@ function matchesEra(year: number, era: string): boolean {
   }
 }
 
+// Keep bucket boundaries in sync with matchesRuntime in server/src/routes/plex.ts
+// and the RUNTIMES labels in questionStages.ts. duration is in milliseconds.
+function matchesRuntime(durationMs: number, bucket: string): boolean {
+  const mins = durationMs / 60000;
+  switch (bucket) {
+    case 'short': return mins < 90;
+    case 'medium': return mins >= 90 && mins <= 120;
+    case 'long': return mins > 120;
+    default: return false;
+  }
+}
+
+// Count how many of the group's runtime picks an item matches. Buckets are disjoint, so this
+// is just how many participants picked the bucket the item falls in.
+function countMatchingRuntimes(durationMs: number, preferredRuntimes: string[]): number {
+  if (preferredRuntimes.length === 0 || !durationMs) return 0;
+  return preferredRuntimes.filter((bucket) => matchesRuntime(durationMs, bucket)).length;
+}
+
+// Penalty per exclusion an item trips when "Hard Filter Exclusions" is OFF. Both sides now
+// scale with the number of participants, so the margin is worth stating: a preference score
+// tops out around 5 * (200 + picks * 100), which stays well under a million until several
+// hundred people are in one session. Below that an excluded item always sorts beneath a
+// non-excluded one no matter how well it matches the group's green picks, while excluded
+// items still order among themselves by how many red picks they trip.
+const SOFT_EXCLUSION_PENALTY = 1_000_000;
+
 // Score an item based on how well it matches preferences (higher = better match)
-// Items matching MORE preferred criteria are scored higher and appear sooner.
+// Items matching MORE preferred criteria are scored higher and appear sooner. The filter
+// lists hold one entry per participant, so an option several people picked also counts
+// several times: popular picks outweigh one person's.
 // When boosted=true (hard filter OFF), weights are much higher to strongly push
 // non-matching items to the bottom of the list.
 function scoreItem(item: any, filters: any, boosted: boolean = false): number {
@@ -218,8 +249,12 @@ function scoreItem(item: any, filters: any, boosted: boolean = false): number {
   const genrePer = boosted ? 100 : 50;
   const eraBase = boosted ? 200 : 25;
   const eraPer = boosted ? 100 : 25;
+  const rtBase = boosted ? 200 : 25;
+  const rtPer = boosted ? 100 : 25;
   const langBase = boosted ? 200 : 35;
   const langPer = boosted ? 100 : 40;
+  const ratingBase = boosted ? 200 : 25;
+  const ratingPer = boosted ? 100 : 25;
 
   if (filters.genres?.length > 0 && itemGenres.length > 0) {
     const genreMatches = countMatchingGenres(itemGenres, filters.genres);
@@ -235,10 +270,25 @@ function scoreItem(item: any, filters: any, boosted: boolean = false): number {
     }
   }
 
+  if (filters.runtimes?.length > 0 && item.duration) {
+    const runtimeMatches = countMatchingRuntimes(item.duration, filters.runtimes);
+    if (runtimeMatches > 0) {
+      score += rtBase + (runtimeMatches * rtPer);
+    }
+  }
+
   if (filters.languages?.length > 0) {
     const langMatches = countMatchingLanguages(itemLanguages, filters.languages);
     if (langMatches > 0) {
       score += langBase + (langMatches * langPer);
+    }
+  }
+
+  // Titles that clear more of the group's minimum ratings surface first (unrated = 0).
+  if (filters.minRatings?.length > 0) {
+    const ratingMatches = countMetMinRatings(item, filters.minRatings, filters.ratingDisplay || 'critic');
+    if (ratingMatches > 0) {
+      score += ratingBase + (ratingMatches * ratingPer);
     }
   }
 
@@ -437,56 +487,48 @@ const Swipe = () => {
     return { allCompleted, participants: mappedParticipants };
   }, []);
 
+  // Every pick is kept as its own entry rather than de-duplicated, so the counters that feed
+  // scoreItem and countMatchedExclusions can see how many people asked for each option: a
+  // genre three participants preferred scores three times over, and one three participants
+  // excluded sinks three times as far. Filtering is unaffected — every filter site only asks
+  // whether an item matches at all (itemMatchesGenres, .some(), countMatched... === 0), and
+  // duplicates can't change a boolean.
   const aggregatePreferences = useCallback((participantsList: Participant[]) => {
-    const participantsWithGenres: string[][] = [];
+    const allGenres: string[] = [];
     const allExcludedGenres: string[] = [];
-    const participantsWithEras: string[][] = [];
+    const allEras: string[] = [];
     const allExcludedEras: string[] = [];
-    const participantsWithLanguages: string[][] = [];
+    const allRuntimes: string[] = [];
+    const allExcludedRuntimes: string[] = [];
+    const allLanguages: string[] = [];
     const allExcludedLanguages: string[] = [];
 
     participantsList.forEach((p) => {
-      if (p.preferences?.genres && p.preferences.genres.length > 0) {
-        participantsWithGenres.push(p.preferences.genres);
-      }
+      if (p.preferences?.genres) allGenres.push(...p.preferences.genres);
       if (p.preferences?.excludedGenres) allExcludedGenres.push(...p.preferences.excludedGenres);
-      
-      if (p.preferences?.eras && p.preferences.eras.length > 0) {
-        participantsWithEras.push(p.preferences.eras);
-      }
+
+      if (p.preferences?.eras) allEras.push(...p.preferences.eras);
       if (p.preferences?.excludedEras) allExcludedEras.push(...p.preferences.excludedEras);
-      
-      if (p.preferences?.languages && p.preferences.languages.length > 0) {
-        participantsWithLanguages.push(p.preferences.languages);
-      }
+
+      if (p.preferences?.runtimes) allRuntimes.push(...p.preferences.runtimes);
+      if (p.preferences?.excludedRuntimes) allExcludedRuntimes.push(...p.preferences.excludedRuntimes);
+
+      if (p.preferences?.languages) allLanguages.push(...p.preferences.languages);
       if (p.preferences?.excludedLanguages) allExcludedLanguages.push(...p.preferences.excludedLanguages);
     });
 
-    let finalGenres: string[] = [];
-    if (participantsWithGenres.length > 0) {
-      const allGenres = participantsWithGenres.flat();
-      finalGenres = [...new Set(allGenres)];
-    }
-
-    let finalEras: string[] = [];
-    if (participantsWithEras.length > 0) {
-      const allEras = participantsWithEras.flat();
-      finalEras = [...new Set(allEras)];
-    }
-
-    let finalLanguages: string[] = [];
-    if (participantsWithLanguages.length > 0) {
-      const allLanguages = participantsWithLanguages.flat();
-      finalLanguages = [...new Set(allLanguages)];
-    }
-
     return {
-      genres: finalGenres,
-      excludedGenres: [...new Set(allExcludedGenres)],
-      eras: finalEras,
-      excludedEras: [...new Set(allExcludedEras)],
-      languages: finalLanguages,
-      excludedLanguages: [...new Set(allExcludedLanguages)],
+      genres: allGenres,
+      excludedGenres: allExcludedGenres,
+      eras: allEras,
+      excludedEras: allExcludedEras,
+      runtimes: allRuntimes,
+      excludedRuntimes: allExcludedRuntimes,
+      languages: allLanguages,
+      excludedLanguages: allExcludedLanguages,
+      // Same one-entry-per-participant rule: the lowest threshold decides what shows, and a
+      // threshold several people chose weighs that much more in the ordering.
+      minRatings: aggregateMinRatings(participantsList),
     };
   }, []);
 
@@ -523,15 +565,22 @@ const Swipe = () => {
       // Load admin settings
       let currentLabelRestrictions = labelRestrictionsRef.current;
       let hardFilterPreferences = true;
+      let hardFilterExclusions = true;
+      let filterWatchedItems = true;
+      // Local copy for the filters below; the state setter can't be read back synchronously.
+      let ratingDisplayMode: RatingDisplay = 'critic';
       try {
         const { data: settingsData } = await adminApi.getSessionSettings();
         if (settingsData?.settings) {
-          setRatingDisplay(settingsData.settings.rating_display || 'critic');
+          ratingDisplayMode = settingsData.settings.rating_display || 'critic';
+          setRatingDisplay(ratingDisplayMode);
           // Trailers on the swiping page only in 'on' mode (not 'voting' or 'off').
           // Fall back to the legacy enable_trailers boolean for un-migrated configs.
           const trailersMode = settingsData.settings.trailers_mode ?? (settingsData.settings.enable_trailers ? 'on' : 'off');
           setEnableTrailers(trailersMode === 'on');
           hardFilterPreferences = settingsData.settings.hard_filter_preferences ?? true;
+          hardFilterExclusions = settingsData.settings.hard_filter_exclusions ?? true;
+          filterWatchedItems = settingsData.settings.filter_watched_items ?? true;
           if (settingsData.settings.enable_label_restrictions) {
             currentLabelRestrictions = {
               enabled: true,
@@ -589,7 +638,7 @@ const Swipe = () => {
           setLoadingMessage("Fetching media from Plex...");
           const { data: mediaData, error: mediaError } = await plexApi.getMedia(
             mediaType || 'both',
-            { ...aggregatedFilters, hardFilterPreferences }
+            { ...aggregatedFilters, hardFilterPreferences, hardFilterExclusions, ratingDisplay: ratingDisplayMode }
           );
           if (!mediaData) {
             throw new MediaLoadError(mediaError);
@@ -641,51 +690,32 @@ const Swipe = () => {
 
       setLoadingMessage("Applying filters...");
       
-      // Apply HARD filters (exclusions only)
+      // Apply exclusions (red selections). Hard by default; when the admin turns
+      // "Hard Filter Exclusions" off they become a scoring penalty instead (see below), so
+      // a group whose combined exclusions would empty the deck still gets something to swipe.
       const hasExclusions = aggregatedFilters && (
         (aggregatedFilters.excludedGenres?.length > 0) ||
         (aggregatedFilters.excludedEras?.length > 0) ||
+        (aggregatedFilters.excludedRuntimes?.length > 0) ||
         (aggregatedFilters.excludedLanguages?.length > 0)
       );
+      const softExclusions = !hardFilterExclusions && hasExclusions;
 
-      if (hasExclusions) {
+      if (hardFilterExclusions && hasExclusions) {
         const beforeCount = fetchedItems.length;
-        fetchedItems = fetchedItems.filter((item: any) => {
-          const itemGenres = item.genres || [];
-          const year = item.year;
-          const itemLanguages = item.languages || [];
-          
-          if (aggregatedFilters.excludedGenres && aggregatedFilters.excludedGenres.length > 0) {
-            if (itemMatchesExcludedGenres(itemGenres, aggregatedFilters.excludedGenres)) {
-              return false;
-            }
-          }
-          
-          if (aggregatedFilters.excludedEras && aggregatedFilters.excludedEras.length > 0 && year) {
-            if (aggregatedFilters.excludedEras.some((era: string) => matchesEra(year, era))) {
-              return false;
-            }
-          }
-          
-          if (aggregatedFilters.excludedLanguages && aggregatedFilters.excludedLanguages.length > 0) {
-            if (itemLanguages.length > 0) {
-              const normalizedItemLangs = itemLanguages.map(normalizeLanguage);
-              if (aggregatedFilters.excludedLanguages.some((l: string) => normalizedItemLangs.includes(normalizeLanguage(l)))) {
-                return false;
-              }
-            }
-          }
-          
-          return true;
-        });
+        fetchedItems = fetchedItems.filter((item: any) => countMatchedExclusions(item, aggregatedFilters) === 0);
         console.log(`[Swipe] After exclusion filters: ${fetchedItems.length} items (removed ${beforeCount - fetchedItems.length})`);
+      } else if (softExclusions) {
+        console.log('[Swipe] Exclusions are soft: excluded items kept and sorted to the bottom');
       }
 
       // Apply HARD filters for preferences (green selections) when enabled
       const hasPreferences = aggregatedFilters && (
         (aggregatedFilters.genres?.length > 0) ||
         (aggregatedFilters.eras?.length > 0) ||
-        (aggregatedFilters.languages?.length > 0)
+        (aggregatedFilters.runtimes?.length > 0) ||
+        (aggregatedFilters.languages?.length > 0) ||
+        (aggregatedFilters.minRatings?.length > 0)
       );
 
       if (hardFilterPreferences && hasPreferences) {
@@ -707,9 +737,22 @@ const Swipe = () => {
             }
           }
 
+          if (aggregatedFilters.runtimes && aggregatedFilters.runtimes.length > 0 && item.duration) {
+            if (!aggregatedFilters.runtimes.some((r: string) => matchesRuntime(item.duration, r))) {
+              return false;
+            }
+          }
+
           if (aggregatedFilters.languages && aggregatedFilters.languages.length > 0 && itemLanguages.length > 0) {
             const normalizedItemLangs = itemLanguages.map(normalizeLanguage);
             if (!aggregatedFilters.languages.some((l: string) => normalizedItemLangs.includes(normalizeLanguage(l)))) {
+              return false;
+            }
+          }
+
+          // Unrated items pass, the same way items without a year skip the era check.
+          if (aggregatedFilters.minRatings.length > 0 && effectiveRatings(item, ratingDisplayMode).length > 0) {
+            if (countMetMinRatings(item, aggregatedFilters.minRatings, ratingDisplayMode) === 0) {
               return false;
             }
           }
@@ -739,8 +782,15 @@ const Swipe = () => {
         studio: item.studio,
         audienceRating: item.audienceRating,
         languages: item.languages || [],
-        _score: hasPreferences ? scoreItem(item, aggregatedFilters, !hardFilterPreferences) : 0,
+        _score: (hasPreferences
+          ? scoreItem(item, { ...aggregatedFilters, ratingDisplay: ratingDisplayMode }, !hardFilterPreferences)
+          : 0)
+          - (softExclusions ? SOFT_EXCLUSION_PENALTY * countMatchedExclusions(item, aggregatedFilters) : 0),
       }));
+
+      // Soft exclusions order the deck even with no preferences set, so the sort below
+      // can't be gated on hasPreferences alone.
+      const hasScores = hasPreferences || softExclusions;
 
       let orderedItems: (PlexItem & { _score: number })[];
       
@@ -772,8 +822,8 @@ const Swipe = () => {
         console.log(`[Swipe] Using fixed order with seed: ${seed}`);
       } else {
         orderedItems = shuffleWithSeed(transformedItems, Date.now() + Math.random() * 1000000);
-        
-        if (hasPreferences) {
+
+        if (hasScores) {
           orderedItems.sort((a, b) => b._score - a._score);
         }
         
@@ -781,7 +831,7 @@ const Swipe = () => {
       }
 
       // Log score distribution for debugging
-      if (hasPreferences) {
+      if (hasScores) {
         const scoreDistribution = new Map<number, number>();
         for (const item of orderedItems) {
           scoreDistribution.set(item._score, (scoreDistribution.get(item._score) || 0) + 1);
@@ -794,8 +844,8 @@ const Swipe = () => {
         console.log('[Swipe] Top 5 items:', topItems.map(i => `${i.title} (score: ${i._score}, genres: ${i.genres.join(', ')})`));
       }
 
-      // Filter watched items
-      if (isPlexUser && localSession?.participantId) {
+      // Filter watched items (admins can turn this off via the Filter Watched Items setting)
+      if (filterWatchedItems && isPlexUser && localSession?.participantId) {
         setLoadingMessage("Filtering watched items...");
         try {
           const { data: watchedData } = await sessionsApi.getWatchedKeys(sid, localSession.participantId);
@@ -1063,8 +1113,9 @@ const Swipe = () => {
   useEffect(() => {
     if (!sessionId || loading || waitingForQuestions || matchFound || hasNavigatedRef.current) return;
     
-    // Skip periodic match check for timed sessions
-    if (isTimedSessionRef.current) return;
+    // Skip periodic match check for purely timed sessions. A timed+target session still
+    // needs this as a backup for the "status became voting" transition.
+    if (isTimedSessionRef.current && !isMatchTargetSessionRef.current) return;
 
     const checkForMatch = async () => {
       if (hasNavigatedRef.current) return;
@@ -1107,22 +1158,38 @@ const Swipe = () => {
     return () => clearInterval(intervalId);
   }, [sessionId, loading, waitingForQuestions, matchFound, navigateToResults, navigate, code, haptics]);
 
-  // Periodic match count sync for match target sessions (backup for missed WebSocket events)
+  // Periodic match count + status sync for match target sessions (backup for missed
+  // WebSocket events). This is the safety net that gets a participant who has finished
+  // their deck off the "All Done!" screen once the target is reached, so every value in
+  // the dependency array below must keep a stable identity across renders — an unstable
+  // one would tear the interval down before it can fire (the countdown timer re-renders
+  // this component every second).
   useEffect(() => {
     if (!sessionId || !isMatchTargetSession || loading || waitingForQuestions || hasNavigatedRef.current) return;
 
-    const syncMatchCount = async () => {
+    const syncMatchState = async () => {
       if (hasNavigatedRef.current) return;
-      
+
       try {
         const response = await fetch(`/api/sessions/${sessionId}/match-count`);
-        if (response.ok) {
-          const data = await response.json();
-          if (data.matchCount !== undefined && data.matchCount !== matchCountRef.current) {
-            console.log(`[Swipe] Match count synced: ${data.matchCount} (was ${matchCountRef.current})`);
-            setMatchCount(data.matchCount);
-            matchCountRef.current = data.matchCount;
-          }
+        if (!response.ok) return;
+
+        const data = await response.json();
+
+        if (data.matchCount !== undefined && data.matchCount !== matchCountRef.current) {
+          console.log(`[Swipe] Match count synced: ${data.matchCount} (was ${matchCountRef.current})`);
+          setMatchCount(data.matchCount);
+          matchCountRef.current = data.matchCount;
+        }
+
+        // The session moved on without us (target hit by someone else, or the host
+        // advanced it) and we never saw the broadcast.
+        if (data.status === 'voting' && !hasNavigatedRef.current) {
+          console.log("[Swipe] Voting status detected via periodic sync");
+          hasNavigatedRef.current = true;
+          haptics.success();
+          toast.success("Match target reached! Time to vote!");
+          navigate(`/timed-results/${code}`);
         }
       } catch (err) {
         // Silently ignore
@@ -1130,10 +1197,10 @@ const Swipe = () => {
     };
 
     // Sync every 3 seconds
-    const intervalId = setInterval(syncMatchCount, 3000);
+    const intervalId = setInterval(syncMatchState, 3000);
 
     return () => clearInterval(intervalId);
-  }, [sessionId, isMatchTargetSession, loading, waitingForQuestions]);
+  }, [sessionId, isMatchTargetSession, loading, waitingForQuestions, code, navigate, haptics]);
 
   const handleSwipe = useCallback(
     async (direction: "left" | "right") => {
@@ -1219,11 +1286,10 @@ const Swipe = () => {
 
       // Handle running out of items
       if (nextIndex >= items.length) {
-        if (isTimedSessionRef.current) {
-          setWaitingForOthers(true);
-          // Don't navigate - wait for timer to expire
-        } else if (isMatchTargetSessionRef.current) {
-          // For match target sessions, if we run out of items, go to voting with whatever matches we have
+        if (isMatchTargetSessionRef.current) {
+          // For match target sessions, if we run out of items, go to voting with whatever matches we have.
+          // This takes precedence over the timer so a timed+target session doesn't idle
+          // until the clock runs out once everyone has swiped through the deck.
           console.log("[Swipe] Ran out of items in match target session, going to voting");
           setWaitingForOthers(true);
           
@@ -1256,9 +1322,12 @@ const Swipe = () => {
               }
             }
           }, 2000);
+        } else if (isTimedSessionRef.current) {
+          setWaitingForOthers(true);
+          // Don't navigate - wait for timer to expire
         } else {
           setWaitingForOthers(true);
-          
+
           setTimeout(async () => {
             if (hasNavigatedRef.current || matchFound) return;
             
@@ -1472,10 +1541,10 @@ const Swipe = () => {
         <Loader2 className="animate-spin text-primary mb-4" size={48} />
         <h1 className="text-2xl font-bold text-foreground mb-2">All Done!</h1>
         <p className="text-muted-foreground text-center">
-          {isTimedSession 
-            ? "Waiting for the timer to end..."
-            : isMatchTargetSession
-              ? "Waiting for others to finish swiping..."
+          {isTimedSession && isMatchTargetSession
+            ? "Waiting for the target to be hit or the timer to end..."
+            : isTimedSession
+              ? "Waiting for the timer to end..."
               : "Waiting for others to finish swiping..."}
         </p>
         <p className="text-sm text-muted-foreground mt-4">

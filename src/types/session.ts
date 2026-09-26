@@ -24,11 +24,13 @@ export interface SessionPreferences {
   excludedGenres?: string[];
   eras?: string[];
   excludedEras?: string[];
+  runtimes?: string[];
+  excludedRuntimes?: string[];
   languages?: string[];
   excludedLanguages?: string[];
+  /** Single-select "Minimum Rating" stage. Absent when the stage is off or answered "I don't mind". */
+  minRating?: number;
   selectedCollections?: string[];
-  // Legacy support
-  era?: string;
 }
 
 export interface Participant {
@@ -51,6 +53,10 @@ export interface Vote {
   vote: boolean;
   created_at: string;
 }
+
+// item_key used for a blank "no preference" final vote. Counts towards everyone having voted,
+// but never towards an item. Keep in sync with ABSTAIN_ITEM_KEY in server/src/routes/sessions.ts.
+export const ABSTAIN_ITEM_KEY = '__no_preference__';
 
 export interface PlexItem {
   ratingKey: string;

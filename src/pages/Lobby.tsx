@@ -94,21 +94,24 @@ const Lobby = () => {
         setCollectionsEnabled(collectionsEnabledSetting);
         setQrEnabled(qrEnabledSetting);
 
-        // If host and collections enabled, fetch collections
+        // If host and collections enabled, fetch collections. The server resolves the configured
+        // libraries itself, so no admin credentials are needed here - any host can pick collections.
         if (userIsHost && collectionsEnabledSetting) {
           setCollectionsLoading(true);
           try {
-            const { data: configData } = await adminApi.getConfig();
-            const libraryKeys = configData?.config?.libraries || [];
-            
-            if (libraryKeys.length > 0) {
-              const { data: collectionsData } = await plexApi.getCollections(libraryKeys, session.media_type);
-              if (collectionsData?.collections) {
-                setCollections(collectionsData.collections);
-              }
+            const { data: collectionsData, error: collectionsError } = await plexApi.getCollections(
+              undefined,
+              session.media_type
+            );
+            if (collectionsError) {
+              throw new Error(collectionsError);
+            }
+            if (collectionsData?.collections) {
+              setCollections(collectionsData.collections);
             }
           } catch (err) {
             console.error("Error fetching collections:", err);
+            toast.error("Couldn't load collections");
           } finally {
             setCollectionsLoading(false);
           }
