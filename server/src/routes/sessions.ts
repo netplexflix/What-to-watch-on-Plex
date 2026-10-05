@@ -4,7 +4,7 @@ import { Response } from 'express';
 import { getDb, generateId } from '../db.js';
 import { broadcastToSession } from '../websocket.js';
 import { encryptToken } from '../services/encryption.js';
-import { verifyPlexServerMembership } from './plex.js';
+import { verifyPlexServerMembership, getWatchlistLibraryMatches } from './plex.js';
 import { createRateLimiter, verifyPasswordServer } from '../middleware/auth.js';
 
 // Sentinel item_key for a blank "no preference" final vote. final_votes.item_key is NOT NULL and
@@ -182,9 +182,28 @@ router.post('/create', async (req, res) => {
       return;
     }
 
+    // Handle useWatchlist
+    const watchlistMode = useWatchlist && plexToken ? 1 : 0;
+
+    // Snapshot which library items are on the host's watchlist now, so every participant swipes the
+    // same deck and nothing depends on Plex answering again mid-session.
+    let watchlistKeys: string[] | null = null;
+    if (watchlistMode) {
+      try {
+        ({ watchlistKeys } = await getWatchlistLibraryMatches(plexToken));
+      } catch (error) {
+        console.error('[Sessions] Create failed: could not load host watchlist:', error);
+        return res.status(502).json({ error: "Couldn't load your watchlist from Plex. Please try again." });
+      }
+      if (watchlistKeys.length === 0) {
+        console.log('[Sessions] Create failed: no watchlist items in library');
+        return res.status(422).json({ error: 'None of your watchlist items are in the library.' });
+      }
+    }
+
     // Encrypt Plex token before storing
     const encryptedPlexToken = encryptToken(plexToken);
-    
+
     // Generate unique code
     let code = generateSessionCode();
     let attempts = 0;
@@ -213,17 +232,14 @@ router.post('/create', async (req, res) => {
       ? matchTarget
       : null;
 
-    // Handle useWatchlist
-    const watchlistMode = useWatchlist && plexToken ? 1 : 0;
-    
-    console.log('[Sessions] Creating session:', { sessionId, code, mediaType, duration, matchTarget: target, displayName: displayName.trim(), useWatchlist: watchlistMode });
-    
+    console.log('[Sessions] Creating session:', { sessionId, code, mediaType, duration, matchTarget: target, displayName: displayName.trim(), useWatchlist: watchlistMode, watchlistItems: watchlistKeys?.length });
+
     // Create session - check if columns exist
     try {
       db.prepare(`
-        INSERT INTO sessions (id, code, status, media_type, preferences, timed_duration, match_target, use_watchlist, host_plex_token, created_at, updated_at)
-        VALUES (?, ?, 'waiting', ?, '{}', ?, ?, ?, ?, datetime('now'), datetime('now'))
-      `).run(sessionId, code, mediaType || 'both', duration, target, watchlistMode, watchlistMode ? encryptedPlexToken : null);
+        INSERT INTO sessions (id, code, status, media_type, preferences, timed_duration, match_target, use_watchlist, host_plex_token, watchlist_keys, created_at, updated_at)
+        VALUES (?, ?, 'waiting', ?, '{}', ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+      `).run(sessionId, code, mediaType || 'both', duration, target, watchlistMode, watchlistMode ? encryptedPlexToken : null, watchlistKeys ? JSON.stringify(watchlistKeys) : null);
     } catch (dbError: any) {
       // If columns don't exist, try without them
       if (dbError.message && (dbError.message.includes('timed_duration') || dbError.message.includes('use_watchlist') || dbError.message.includes('match_target'))) {
@@ -292,8 +308,8 @@ router.get('/code/:code', (req, res) => {
       }
     }
     
-    // Strip sensitive token before sending to clients
-    const { host_plex_token: _hpt, ...safeSession } = session;
+    // Strip sensitive token before sending to clients (and the watchlist snapshot, which has its own endpoint)
+    const { host_plex_token: _hpt, watchlist_keys: _wk, ...safeSession } = session;
 
     res.json({ 
       session: {
@@ -333,8 +349,8 @@ router.get('/:id', (req, res) => {
       }
     }
     
-    // Strip sensitive token before sending to clients
-    const { host_plex_token: _hpt, ...safeSession } = session;
+    // Strip sensitive token before sending to clients (and the watchlist snapshot, which has its own endpoint)
+    const { host_plex_token: _hpt, watchlist_keys: _wk, ...safeSession } = session;
 
     res.json({ 
       session: {
@@ -455,8 +471,8 @@ router.patch('/:id', (req, res) => {
       }
     }
 
-    // Strip sensitive token before sending to clients
-    const { host_plex_token: _hpt, ...safeSession } = session || {};
+    // Strip sensitive token before sending to clients (and the watchlist snapshot, which has its own endpoint)
+    const { host_plex_token: _hpt, watchlist_keys: _wk, ...safeSession } = session || {};
     
     res.json({ 
       session: session ? {

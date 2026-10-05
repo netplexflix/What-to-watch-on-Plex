@@ -1205,128 +1205,111 @@ router.get('/session/:sessionId/watched-keys/:participantId', async (req, res) =
   }
 });
 
-// Get watchlist keys for a session (host token looked up server-side)
+// Get watchlist keys for a session. The host's matched watchlist is stored on the session when it's
+// created, so every participant swipes the same deck and nothing asks Plex again mid-session.
 router.get('/session/:sessionId/watchlist-keys', async (req, res) => {
   try {
-    const config = getPlexConfig();
-    if (!config?.plex_url || !config?.plex_token) {
-      return res.status(400).json({ error: 'Plex not configured' });
-    }
-
     const { sessionId } = req.params;
     const db = getDb();
 
     const session = db.prepare(
-      'SELECT host_plex_token, use_watchlist FROM sessions WHERE id = ?'
-    ).get(sessionId) as { host_plex_token: string | null; use_watchlist: number } | undefined;
+      'SELECT host_plex_token, use_watchlist, watchlist_keys FROM sessions WHERE id = ?'
+    ).get(sessionId) as { host_plex_token: string | null; use_watchlist: number; watchlist_keys: string | null } | undefined;
 
-    const hostToken = decryptToken(session?.host_plex_token);
-    if (!session?.use_watchlist || !hostToken) {
-      return res.json({ watchlistKeys: [], watchlistCount: 0, matchedCount: 0 });
+    if (!session?.use_watchlist) {
+      return res.json({ watchlistKeys: [], matchedCount: 0 });
     }
 
-    console.log('[Plex] Fetching watchlist for session host (server-side)...');
-
-    const watchlistItems = await fetchAllWatchlistItems(hostToken);
-    console.log(`[Plex] Found ${watchlistItems.length} total items in host's watchlist`);
-
-    const watchlistGuids = new Set<string>();
-    const watchlistTitles = new Map<string, any>();
-
-    for (const item of watchlistItems) {
-      const key = `${item.title?.toLowerCase()}:${item.year || ''}`;
-      watchlistTitles.set(key, item);
-
-      if (item.Guid) {
-        for (const guid of item.Guid) {
-          watchlistGuids.add(guid.id);
-        }
+    let watchlistKeys: string[];
+    if (session.watchlist_keys) {
+      watchlistKeys = JSON.parse(session.watchlist_keys);
+    } else {
+      // Sessions created before the snapshot existed: fetch once and store it for everyone else.
+      const hostToken = decryptToken(session.host_plex_token);
+      if (!hostToken) {
+        return res.json({ watchlistKeys: [], matchedCount: 0 });
       }
-      if (item.guid) {
-        watchlistGuids.add(item.guid);
-      }
-      if (item.ratingKey) {
-        watchlistGuids.add(`plex://movie/${item.ratingKey}`);
-        watchlistGuids.add(`plex://show/${item.ratingKey}`);
-      }
+      console.log('[Plex] Session has no watchlist snapshot, fetching host watchlist...');
+      ({ watchlistKeys } = await getWatchlistLibraryMatches(hostToken));
+      db.prepare('UPDATE sessions SET watchlist_keys = ? WHERE id = ?').run(JSON.stringify(watchlistKeys), sessionId);
     }
 
-    const selectedLibraries = config.libraries || [];
-    const sortedLibraryKeys = [...selectedLibraries].sort().join(',');
-
-    const cached = db.prepare(
-      'SELECT items FROM media_items_cache WHERE library_keys = ? AND media_type = ?'
-    ).get(sortedLibraryKeys, 'both') as { items: string } | undefined;
-
-    const matchedKeys: string[] = [];
-
-    if (cached?.items) {
-      const localItems = JSON.parse(cached.items);
-      for (const localItem of localItems) {
-        const key = `${localItem.title?.toLowerCase()}:${localItem.year || ''}`;
-        if (watchlistTitles.has(key)) {
-          matchedKeys.push(localItem.ratingKey);
-          continue;
-        }
-
-        if (localItem.guids && Array.isArray(localItem.guids)) {
-          for (const guid of localItem.guids) {
-            if (watchlistGuids.has(guid)) {
-              matchedKeys.push(localItem.ratingKey);
-              break;
-            }
-          }
-        }
-      }
-    }
-
-    console.log(`[Plex] Matched ${matchedKeys.length} watchlist items to local library`);
-
-    res.json({
-      watchlistKeys: matchedKeys,
-      watchlistCount: watchlistItems.length,
-      matchedCount: matchedKeys.length,
-    });
+    res.json({ watchlistKeys, matchedCount: watchlistKeys.length });
   } catch (error) {
     console.error('Error getting watchlist keys for session:', error);
     res.status(500).json({ error: 'Failed to get watchlist' });
   }
 });
 
-// Helper function to fetch all watchlist items with pagination
+const WATCHLIST_PAGE_SIZE = 50;
+const WATCHLIST_MAX_ATTEMPTS = 3;
+const WATCHLIST_REQUEST_TIMEOUT_MS = 10000;
+const WATCHLIST_MAX_RETRY_WAIT_MS = 5000;
+
+// Fetch one watchlist page, retrying rate limits (429), server errors and network failures.
+// Throws once retries run out: returning a short list would quietly show the wrong items.
+async function fetchWatchlistPage(userPlexToken: string, offset: number): Promise<any> {
+  const url = `https://discover.provider.plex.tv/library/sections/watchlist/all?X-Plex-Token=${userPlexToken}&X-Plex-Container-Start=${offset}&X-Plex-Container-Size=${WATCHLIST_PAGE_SIZE}`;
+
+  for (let attempt = 1; ; attempt++) {
+    let failure = '';
+    let retryable = true;
+    let waitMs = 1000 * 2 ** (attempt - 1);
+
+    try {
+      const response = await fetch(url, {
+        headers: {
+          Accept: 'application/json',
+          'X-Plex-Product': PLEX_APP_NAME,
+          'X-Plex-Client-Identifier': PLEX_CLIENT_ID,
+        },
+        signal: AbortSignal.timeout(WATCHLIST_REQUEST_TIMEOUT_MS),
+      });
+
+      if (response.ok) {
+        return await response.json();
+      }
+
+      failure = `HTTP ${response.status}`;
+      // Other 4xx (e.g. an expired token) won't succeed on a retry.
+      retryable = response.status === 429 || response.status >= 500;
+      const retryAfterSec = Number(response.headers.get('Retry-After'));
+      if (retryAfterSec > 0) {
+        waitMs = Math.min(retryAfterSec * 1000, WATCHLIST_MAX_RETRY_WAIT_MS);
+      }
+    } catch (error) {
+      // Network error or timeout
+      failure = error instanceof Error ? error.message : String(error);
+    }
+
+    if (!retryable || attempt >= WATCHLIST_MAX_ATTEMPTS) {
+      throw new Error(`Watchlist fetch failed at offset ${offset}: ${failure}`);
+    }
+
+    console.warn(`[Plex] Watchlist fetch failed at offset ${offset} (${failure}), retrying in ${waitMs}ms (attempt ${attempt}/${WATCHLIST_MAX_ATTEMPTS})`);
+    await new Promise(resolve => setTimeout(resolve, waitMs));
+  }
+}
+
+// Helper function to fetch all watchlist items with pagination. Throws rather than returning a partial list.
 async function fetchAllWatchlistItems(userPlexToken: string): Promise<any[]> {
   const allItems: any[] = [];
   let offset = 0;
-  const pageSize = 50; // Fetch 50 items at a time
   let hasMore = true;
 
   while (hasMore) {
-    const url = `https://discover.provider.plex.tv/library/sections/watchlist/all?X-Plex-Token=${userPlexToken}&X-Plex-Container-Start=${offset}&X-Plex-Container-Size=${pageSize}`;
-    
-    const response = await fetch(url, {
-      headers: {
-        Accept: 'application/json',
-        'X-Plex-Product': PLEX_APP_NAME,
-        'X-Plex-Client-Identifier': PLEX_CLIENT_ID,
-      },
-    });
-
-    if (!response.ok) {
-      console.error(`[Plex] Watchlist fetch failed at offset ${offset}:`, response.status);
-      break;
-    }
-
-    const data = await response.json();
+    const data = await fetchWatchlistPage(userPlexToken, offset);
     const items = data.MediaContainer?.Metadata || [];
-    const totalSize = data.MediaContainer?.totalSize || 0;
+    const totalSize = data.MediaContainer?.totalSize;
 
     allItems.push(...items);
     offset += items.length;
 
-    console.log(`[Plex] Fetched watchlist items ${offset}/${totalSize}`);
+    console.log(`[Plex] Fetched watchlist items ${offset}/${totalSize ?? '?'}`);
 
-    // Check if we've fetched all items
-    if (items.length < pageSize || offset >= totalSize) {
+    // A short page is the last one. totalSize can end it a page sooner, but only when Plex sends it:
+    // treating a missing totalSize as 0 would stop after the first page.
+    if (items.length < WATCHLIST_PAGE_SIZE || (typeof totalSize === 'number' && offset >= totalSize)) {
       hasMore = false;
     }
 
@@ -1337,6 +1320,85 @@ async function fetchAllWatchlistItems(userPlexToken: string): Promise<any[]> {
   }
 
   return allItems;
+}
+
+// Match a Plex user's watchlist against the cached library and return the ratingKeys of the
+// library items on it. Throws when the watchlist can't be fetched in full.
+export async function getWatchlistLibraryMatches(userPlexToken: string): Promise<{
+  watchlistKeys: string[];
+  watchlistCount: number;
+  matchedCount: number;
+}> {
+  const watchlistItems = await fetchAllWatchlistItems(userPlexToken);
+
+  console.log(`[Plex] Found ${watchlistItems.length} total items in watchlist`);
+
+  // Get the GUIDs from watchlist items to match with local library
+  const watchlistGuids = new Set<string>();
+  const watchlistTitles = new Map<string, any>();
+
+  for (const item of watchlistItems) {
+    const key = `${item.title?.toLowerCase()}:${item.year || ''}`;
+    watchlistTitles.set(key, item);
+
+    if (item.Guid) {
+      for (const guid of item.Guid) {
+        watchlistGuids.add(guid.id);
+      }
+    }
+    if (item.guid) {
+      watchlistGuids.add(item.guid);
+    }
+    if (item.ratingKey) {
+      watchlistGuids.add(`plex://movie/${item.ratingKey}`);
+      watchlistGuids.add(`plex://show/${item.ratingKey}`);
+    }
+  }
+
+  console.log(`[Plex] Watchlist has ${watchlistTitles.size} unique titles and ${watchlistGuids.size} GUIDs`);
+
+  // Now match against local library cache
+  const db = getDb();
+  const selectedLibraries = getPlexConfig()?.libraries || [];
+  const sortedLibraryKeys = [...selectedLibraries].sort().join(',');
+
+  const cached = db.prepare(
+    'SELECT items FROM media_items_cache WHERE library_keys = ? AND media_type = ?'
+  ).get(sortedLibraryKeys, 'both') as { items: string } | undefined;
+
+  const matchedKeys: string[] = [];
+
+  if (cached?.items) {
+    const localItems = JSON.parse(cached.items);
+    console.log(`[Plex] Checking ${localItems.length} local items against watchlist`);
+
+    for (const localItem of localItems) {
+      const key = `${localItem.title?.toLowerCase()}:${localItem.year || ''}`;
+      if (watchlistTitles.has(key)) {
+        matchedKeys.push(localItem.ratingKey);
+        continue;
+      }
+
+      if (localItem.guids && Array.isArray(localItem.guids)) {
+        for (const guid of localItem.guids) {
+          if (watchlistGuids.has(guid)) {
+            matchedKeys.push(localItem.ratingKey);
+            break;
+          }
+        }
+      }
+    }
+  } else {
+    console.log('[Plex] No local cache available for watchlist matching');
+  }
+
+  console.log(`[Plex] Matched ${matchedKeys.length} watchlist items to local library`);
+
+  return {
+    watchlistKeys: matchedKeys,
+    watchlistCount: watchlistItems.length,
+    matchedCount: matchedKeys.length,
+  };
 }
 
 // Get user's watchlist with pagination
@@ -1354,80 +1416,7 @@ router.post('/get-watchlist', async (req, res) => {
 
     console.log('[Plex] Fetching watchlist for user (with pagination)...');
 
-    // Fetch all watchlist items with pagination
-    const watchlistItems = await fetchAllWatchlistItems(userPlexToken);
-
-    console.log(`[Plex] Found ${watchlistItems.length} total items in user's watchlist`);
-
-    // Get the GUIDs from watchlist items to match with local library
-    const watchlistGuids = new Set<string>();
-    const watchlistTitles = new Map<string, any>();
-
-    for (const item of watchlistItems) {
-      const key = `${item.title?.toLowerCase()}:${item.year || ''}`;
-      watchlistTitles.set(key, item);
-
-      if (item.Guid) {
-        for (const guid of item.Guid) {
-          watchlistGuids.add(guid.id);
-        }
-      }
-      if (item.guid) {
-        watchlistGuids.add(item.guid);
-      }
-      if (item.ratingKey) {
-        watchlistGuids.add(`plex://movie/${item.ratingKey}`);
-        watchlistGuids.add(`plex://show/${item.ratingKey}`);
-      }
-    }
-
-    console.log(`[Plex] Watchlist has ${watchlistTitles.size} unique titles and ${watchlistGuids.size} GUIDs`);
-
-    // Now match against local library cache
-    const db = getDb();
-    const selectedLibraries = config.libraries || [];
-    const sortedLibraryKeys = [...selectedLibraries].sort().join(',');
-
-    const cached = db.prepare(
-      'SELECT items FROM media_items_cache WHERE library_keys = ? AND media_type = ?'
-    ).get(sortedLibraryKeys, 'both') as { items: string } | undefined;
-
-    const matchedKeys: string[] = [];
-
-    if (cached?.items) {
-      const localItems = JSON.parse(cached.items);
-      console.log(`[Plex] Checking ${localItems.length} local items against watchlist`);
-
-      for (const localItem of localItems) {
-        const key = `${localItem.title?.toLowerCase()}:${localItem.year || ''}`;
-        if (watchlistTitles.has(key)) {
-          matchedKeys.push(localItem.ratingKey);
-          continue;
-        }
-
-        if (localItem.guids && Array.isArray(localItem.guids)) {
-          let matched = false;
-          for (const guid of localItem.guids) {
-            if (watchlistGuids.has(guid)) {
-              matchedKeys.push(localItem.ratingKey);
-              matched = true;
-              break;
-            }
-          }
-          if (matched) continue;
-        }
-      }
-    } else {
-      console.log('[Plex] No local cache available for watchlist matching');
-    }
-
-    console.log(`[Plex] Matched ${matchedKeys.length} watchlist items to local library`);
-
-    res.json({ 
-      watchlistKeys: matchedKeys,
-      watchlistCount: watchlistItems.length,
-      matchedCount: matchedKeys.length,
-    });
+    res.json(await getWatchlistLibraryMatches(userPlexToken));
   } catch (error) {
     console.error('Error getting watchlist:', error);
     res.status(500).json({ error: 'Failed to get watchlist' });

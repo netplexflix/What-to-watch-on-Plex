@@ -93,6 +93,7 @@ const CreateSession = () => {
   const [useWatchlist, setUseWatchlist] = useState(false);
   const [watchlistCount, setWatchlistCount] = useState<number | null>(null);
   const [isLoadingWatchlist, setIsLoadingWatchlist] = useState(false);
+  const [watchlistLoadFailed, setWatchlistLoadFailed] = useState(false);
 
   const [plexUser, setPlexUser] = useState<PlexUser | null>(null);
   const [plexToken, setPlexToken] = useState<string | null>(null);
@@ -154,11 +155,13 @@ const CreateSession = () => {
     if (!plexToken) return;
 
     setIsLoadingWatchlist(true);
+    setWatchlistLoadFailed(false);
     try {
       const { data, error } = await plexApi.getWatchlist(plexToken);
       if (error) {
         console.error("Error loading watchlist:", error);
         setWatchlistCount(0);
+        setWatchlistLoadFailed(true);
       } else if (data) {
         setWatchlistCount(data.matchedCount ?? 0);
         console.log(
@@ -168,6 +171,7 @@ const CreateSession = () => {
     } catch (err) {
       console.error("Error loading watchlist:", err);
       setWatchlistCount(0);
+      setWatchlistLoadFailed(true);
     } finally {
       setIsLoadingWatchlist(false);
     }
@@ -585,6 +589,8 @@ const CreateSession = () => {
                     <p className="text-xs text-muted-foreground">
                       {isLoadingWatchlist
                         ? "Loading..."
+                        : watchlistLoadFailed
+                          ? "Couldn't load from Plex"
                         : watchlistCount !== null
                           ? watchlistCount > 0
                             ? `${watchlistCount} item${watchlistCount !== 1 ? "s" : ""}`
