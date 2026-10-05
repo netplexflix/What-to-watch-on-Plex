@@ -161,6 +161,12 @@ function runMigrations(db: DatabaseType) {
     db.exec('ALTER TABLE sessions ADD COLUMN match_target INTEGER DEFAULT NULL');
   }
 
+  // JSON array of library ratingKeys on the host's watchlist, captured when a watchlist session is created
+  if (!sessionColumnNames.includes('watchlist_keys')) {
+    console.log('[DB Migration] Adding watchlist_keys column to sessions');
+    db.exec('ALTER TABLE sessions ADD COLUMN watchlist_keys TEXT DEFAULT NULL');
+  }
+
   // Create final_votes table if not exists
   db.exec(`
     CREATE TABLE IF NOT EXISTS final_votes (

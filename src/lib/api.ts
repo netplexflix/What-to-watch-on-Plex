@@ -576,7 +576,7 @@ export const sessionsApi = {
     fetchApiGet<{ watchedKeys: string[] }>(`/plex/session/${sessionId}/watched-keys/${participantId}`),
 
   getWatchlistKeys: (sessionId: string) =>
-    fetchApiGet<{ watchlistKeys: string[]; watchlistCount: number; matchedCount: number }>(`/plex/session/${sessionId}/watchlist-keys`),
+    fetchApiGet<{ watchlistKeys: string[]; matchedCount: number }>(`/plex/session/${sessionId}/watchlist-keys`),
 
   checkWatchlist: (sessionId: string, participantId: string, ratingKey: string) =>
     fetchApi<{ inWatchlist: boolean }>(`/plex/session/${sessionId}/check-watchlist/${participantId}`, {

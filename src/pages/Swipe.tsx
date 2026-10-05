@@ -606,26 +606,22 @@ const Swipe = () => {
       
       let fetchedItems: any[] = [];
       
-      // Check if this is a watchlist-based session
+      // A watchlist session only ever shows watchlist items. If they can't be loaded, fail to the
+      // retry screen rather than quietly falling back to the whole library.
       if (useWatchlist) {
         setLoadingMessage("Loading from watchlist...");
-        try {
-          const { data: watchlistData } = await sessionsApi.getWatchlistKeys(sid);
-          if (watchlistData?.watchlistKeys && watchlistData.watchlistKeys.length > 0) {
-            const { data: cachedData } = await sessionsApi.getCachedMedia(mediaType || 'both');
-            if (cachedData?.items) {
-              const watchlistSet = new Set(watchlistData.watchlistKeys);
-              fetchedItems = cachedData.items.filter((item: any) => watchlistSet.has(item.ratingKey));
-              console.log(`[Swipe] Filtered to ${fetchedItems.length} watchlist items`);
-            }
-          }
-        } catch (e) {
-          console.error('[Swipe] Error loading watchlist:', e);
+        const { data: watchlistData, error: watchlistError } = await sessionsApi.getWatchlistKeys(sid);
+        if (!watchlistData) {
+          throw new MediaLoadError(watchlistError);
         }
-      }
-      
-      // If no watchlist items or not a watchlist session, load from cache normally
-      if (fetchedItems.length === 0) {
+        const { data: cachedData, error: cachedError } = await sessionsApi.getCachedMedia(mediaType || 'both');
+        if (!cachedData) {
+          throw new MediaLoadError(cachedError);
+        }
+        const watchlistSet = new Set(watchlistData.watchlistKeys);
+        fetchedItems = (cachedData.items || []).filter((item: any) => watchlistSet.has(item.ratingKey));
+        console.log(`[Swipe] Filtered to ${fetchedItems.length} watchlist items`);
+      } else {
         const { data: cachedData, error: cachedError } = await sessionsApi.getCachedMedia(mediaType || 'both');
 
         if (cachedData?.items && cachedData.items.length > 0) {
