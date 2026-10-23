@@ -226,12 +226,13 @@ const Results = () => {
   }
 
   return (
-    <div className="min-h-screen flex flex-col relative overflow-hidden">
+    <div className="min-h-dvh flex flex-col relative overflow-hidden">
       <div className="fixed inset-0 bg-background">
         <div className="absolute inset-0 bg-gradient-to-br from-primary/5 via-transparent to-accent/5" />
       </div>
 
-      <div className="flex-1 flex flex-col items-center justify-center px-6 py-8 relative z-10">
+      {/* MatchCelebration pads itself and sizes its poster to the remaining height */}
+      <div className="flex-1 flex flex-col relative z-10">
         {winnerItem && (
           <MatchCelebration item={winnerItem} ratingDisplay={ratingDisplay}>
             <div className="flex flex-col gap-3 w-full">

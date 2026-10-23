@@ -367,7 +367,7 @@ setupWebSocket(wss);
 
 // ============ AUTO CACHE REFRESH SCHEDULER ============
 
-async function performCacheRefresh(): Promise<{ success: boolean; mediaCount?: number; error?: string }> {
+async function performCacheRefresh(): Promise<{ success: boolean; mediaCount?: number; error?: string; alreadyRunning?: boolean }> {
   try {
     const db = getDb();
 
@@ -416,14 +416,15 @@ function scheduleAutoCacheRefresh() {
       
       // Check if we already refreshed today
       const lastRefreshRow = db.prepare('SELECT value FROM app_config WHERE key = ?').get('last_auto_cache_refresh') as { value: string } | undefined;
-      
+
       if (lastRefreshRow) {
         try {
           const lastRefresh = JSON.parse(lastRefreshRow.value);
           const lastRefreshDate = new Date(lastRefresh.timestamp);
-          
-          // If we already refreshed today, skip
-          if (lastRefreshDate.toDateString() === now.toDateString()) {
+
+          // If we already refreshed today, skip. A failed attempt (Plex briefly down, e.g.
+          // restarting for an update) is retried on the next tick while still inside the window.
+          if (lastRefresh.success !== false && lastRefreshDate.toDateString() === now.toDateString()) {
             return;
           }
         } catch (e) {
@@ -434,7 +435,14 @@ function scheduleAutoCacheRefresh() {
       console.log('[AutoCache] Starting automatic cache refresh at 3 AM...');
       
       const result = await performCacheRefresh();
-      
+
+      // A refresh is still running (a long one started on an earlier tick, or a manual one):
+      // nothing failed, so record nothing and look again on the next tick.
+      if (result.alreadyRunning) {
+        console.log('[AutoCache] A cache refresh is already running, skipping this tick');
+        return;
+      }
+
       if (result.success) {
         console.log(`[AutoCache] Cache refresh completed successfully: ${result.mediaCount} items`);
         

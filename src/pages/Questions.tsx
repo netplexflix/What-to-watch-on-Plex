@@ -16,7 +16,9 @@ import { toast } from "sonner";
 const Questions = () => {
   const navigate = useNavigate();
   const { code } = useParams<{ code: string }>();
-  const localSession = getLocalSession();
+  // Read once: getLocalSession() parses a new object on every call, and as an effect
+  // dependency that would re-run the effects below on every render.
+  const [localSession] = useState(getLocalSession);
   const [loading, setLoading] = useState(true);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [languages, setLanguages] = useState<{ language: string; count: number }[]>([]);
@@ -262,11 +264,15 @@ const Questions = () => {
     };
 
     initQuestions();
+  }, [code, navigate, localSession, navigateToSwipe, startPolling]);
 
+  // Leave the session's live updates only when leaving the page. Kept out of the init effect
+  // above, whose cleanup would also run whenever one of its dependencies changed.
+  useEffect(() => {
     return () => {
       wsClient.unsubscribe();
     };
-  }, [code, navigate, localSession, navigateToSwipe, startPolling]);
+  }, []);
 
   const participantId = localSession?.participantId;
 

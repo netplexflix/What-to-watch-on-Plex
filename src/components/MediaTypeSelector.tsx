@@ -32,7 +32,7 @@ export const MediaTypeSelector = ({ value, onChange, className }: MediaTypeSelec
               onChange(option.value);
             }}
             className={cn(
-              "relative flex flex-col items-center gap-1.5 p-3 rounded-xl transition-all duration-200",
+              "relative flex flex-col items-center gap-1 px-1.5 py-2 rounded-xl transition-all duration-200",
               value === option.value
                 ? "glass-card border-2 border-primary glow-primary"
                 : "glass-card hover:border-muted-foreground/30"
@@ -45,7 +45,7 @@ export const MediaTypeSelector = ({ value, onChange, className }: MediaTypeSelec
             )}
             <div
               className={cn(
-                "w-9 h-9 rounded-lg flex items-center justify-center",
+                "w-8 h-8 rounded-lg flex items-center justify-center",
                 value === option.value
                   ? "bg-primary text-primary-foreground"
                   : "bg-secondary text-secondary-foreground"

@@ -1,5 +1,5 @@
 //file: /src/pages/Lobby.tsx
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { Copy, Users, Play, Loader2, FolderOpen, Check, ChevronDown, ChevronUp, Search } from "lucide-react";
@@ -33,7 +33,9 @@ interface Collection {
 const Lobby = () => {
   const navigate = useNavigate();
   const { code } = useParams<{ code: string }>();
-  const localSession = getLocalSession();
+  // Read once: getLocalSession() parses a new object on every call, and as an effect
+  // dependency that would re-run the effects below on every render.
+  const [localSession] = useState(getLocalSession);
   const haptics = useHaptics();
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [isHost, setIsHost] = useState(false);
@@ -56,6 +58,14 @@ const Lobby = () => {
   // QR Code state
   const [qrEnabled, setQrEnabled] = useState(false);
   const [qrEnlarged, setQrEnlarged] = useState(false);
+
+  // The WebSocket event and the backup poll below can both report the start
+  const hasNavigatedRef = useRef(false);
+  const navigateToQuestions = useCallback(() => {
+    if (hasNavigatedRef.current) return;
+    hasNavigatedRef.current = true;
+    navigate(`/questions/${code}`);
+  }, [navigate, code]);
 
   useEffect(() => {
     if (!code || isInitializedRef.current) return;
@@ -123,7 +133,7 @@ const Lobby = () => {
 
         // Check if session already started AFTER WebSocket is connected
         if (session.status === "questions" || session.status === "swiping") {
-          navigate(`/questions/${code}`);
+          navigateToQuestions();
           return;
         }
 
@@ -136,11 +146,15 @@ const Lobby = () => {
     };
 
     initLobby();
+  }, [code, navigate, localSession, navigateToQuestions]);
 
+  // Leave the session's live updates only when leaving the page. Kept out of the init effect
+  // above, whose cleanup would also run whenever one of its dependencies changed.
+  useEffect(() => {
     return () => {
       wsClient.unsubscribe();
     };
-  }, [code, navigate, localSession]);
+  }, []);
 
   // Listen for WebSocket events
   useEffect(() => {
@@ -154,13 +168,13 @@ const Lobby = () => {
           return [...prev, data.participant];
         });
         haptics.light();
-        toast.success(`${data.participant.display_name} joined!`);
+        // toast.success(`${data.participant.display_name} joined!`); // disabled for now. too much noise imo
       }
     });
 
     const unsubSessionUpdated = wsClient.on('session_updated', (data) => {
       if (data.status === 'questions') {
-        navigate(`/questions/${code}`);
+        navigateToQuestions();
       }
     });
 
@@ -168,8 +182,39 @@ const Lobby = () => {
       unsubParticipantJoined();
       unsubSessionUpdated();
     };
-  }, [sessionId, code, navigate, haptics]);
+  }, [sessionId, navigateToQuestions, haptics]);
 
+  // Backup for the WebSocket events above, e.g. for a phone that was locked while waiting:
+  // re-read the participants and the session status, and follow the host once they start.
+  useEffect(() => {
+    if (!sessionId || loading) return;
+
+    const resync = async () => {
+      if (hasNavigatedRef.current) return;
+
+      const [{ data: sessionData }, { data: participantsData }] = await Promise.all([
+        sessionsApi.getById(sessionId),
+        sessionsApi.getParticipants(sessionId),
+      ]);
+      if (hasNavigatedRef.current) return;
+
+      const latest: Participant[] | undefined = participantsData?.participants;
+      if (latest) {
+        // Keep the current array when nothing changed, so an idle lobby doesn't re-render every tick
+        setParticipants(prev =>
+          prev.length === latest.length && prev.every((p, i) => p.id === latest[i].id) ? prev : latest
+        );
+      }
+
+      const status = sessionData?.session?.status;
+      if (status === 'questions' || status === 'swiping') {
+        navigateToQuestions();
+      }
+    };
+
+    const intervalId = setInterval(resync, 3000);
+    return () => clearInterval(intervalId);
+  }, [sessionId, loading, navigateToQuestions]);
   const handleCopyCode = async () => {
     try {
       await navigator.clipboard.writeText(code?.toUpperCase() || "");
@@ -268,7 +313,9 @@ const Lobby = () => {
   }
 
   return (
-    <div className="min-h-screen flex flex-col relative overflow-hidden">
+    // overflow-x-clip, not overflow-hidden: a hidden overflow would make this div the sticky
+    // container and the pinned Start button would no longer stick to the screen
+    <div className="min-h-dvh flex flex-col relative overflow-x-clip">
       {/* Background */}
       <div className="fixed inset-0 bg-background">
         <div className="absolute inset-0 bg-gradient-to-br from-primary/5 via-transparent to-accent/5" />
@@ -309,13 +356,15 @@ const Lobby = () => {
       </AnimatePresence>
 
       {/* Content */}
-      <div className="flex-1 flex flex-col items-center justify-center px-6 relative z-10">
+      {/* pt-6 keeps the logo off the top edge; the bottom spacing lives in the pinned Start
+          footer (host) or under the waiting text (everyone else) */}
+      <div className="flex-1 flex flex-col items-center justify-center px-6 pt-6 relative z-10">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           className="w-full max-w-md"
         >
-          <div className="flex justify-center mb-8">
+          <div className="flex justify-center mb-6">
             <Logo size="md" />
           </div>
 
@@ -331,7 +380,7 @@ const Lobby = () => {
             <motion.div
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
-              className="flex justify-center mb-6"
+              className="flex justify-center mb-4"
             >
               <div
                 className="p-2 bg-white rounded-xl shadow-lg cursor-pointer active:scale-95 transition-transform"
@@ -353,15 +402,15 @@ const Lobby = () => {
           <SessionCodeDisplay 
             code={code || ""} 
             onCopy={handleCopyCode} 
-            copied={copied} 
-            className="my-6"
+            copied={copied}
+            className="my-4"
           />
 
           {/* Copy Link Button */}
           <Button
             variant="outline"
             onClick={handleCopyLink}
-            className="w-full mb-6"
+            className="w-full mb-4"
           >
             <Copy size={18} className="mr-2" />
             Copy Invite Link
@@ -369,7 +418,7 @@ const Lobby = () => {
 
           {/* Collections Selector (Host only, if enabled) */}
           {isHost && collectionsEnabled && collections.length > 0 && (
-            <div className="glass-card rounded-xl p-4 mb-6">
+            <div className="glass-card rounded-xl p-4 mb-4">
               <button
                 onClick={() => {
                   haptics.selection();
@@ -475,7 +524,7 @@ const Lobby = () => {
           )}
 
           {/* Participants */}
-          <div className="glass-card rounded-xl p-4 mb-8">
+          <div className="glass-card rounded-xl p-4 mb-6">
             <div className="flex items-center gap-2 mb-4">
               <Users size={20} className="text-primary" />
               <h2 className="font-semibold text-foreground">
@@ -485,29 +534,37 @@ const Lobby = () => {
             <ParticipantsList participants={participants} hostId={sessionHostId} />
           </div>
 
-          {/* Start Button (Host only) */}
+          {/* Start Button (Host only) - pinned to the bottom of the screen so a growing
+              participant list scrolls under it instead of pushing it out of view. The band
+              spans the full screen width (button stays column-wide) so no edges show on desktop. */}
           {isHost && (
-            <Button
-              onClick={handleStart}
-              disabled={participants.length < 1 || isStarting}
-              className="w-full h-14 text-lg font-semibold bg-primary hover:bg-primary/90 text-primary-foreground"
-            >
-              {isStarting ? (
-                <>
-                  <Loader2 className="mr-2 animate-spin" size={20} />
-                  Starting...
-                </>
-              ) : (
-                <>
-                  <Play size={20} className="mr-2" />
-                  Start Session
-                </>
-              )}
-            </Button>
+            <div className="sticky bottom-0 mx-[calc(50%-50vw)] px-[calc(50vw-50%)] pb-6 bg-background">
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-x-0 -top-6 h-6 bg-gradient-to-t from-background to-transparent"
+              />
+              <Button
+                onClick={handleStart}
+                disabled={participants.length < 1 || isStarting}
+                className="w-full h-14 text-lg font-semibold bg-primary hover:bg-primary/90 text-primary-foreground"
+              >
+                {isStarting ? (
+                  <>
+                    <Loader2 className="mr-2 animate-spin" size={20} />
+                    Starting...
+                  </>
+                ) : (
+                  <>
+                    <Play size={20} className="mr-2" />
+                    Start Session
+                  </>
+                )}
+              </Button>
+            </div>
           )}
 
           {!isHost && (
-            <div className="text-center">
+            <div className="text-center pb-6">
               <p className="text-muted-foreground">
                 Waiting for host to start the session...
               </p>
