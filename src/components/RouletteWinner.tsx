@@ -5,6 +5,7 @@ import { Trophy, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useHaptics } from "@/hooks/useHaptics";
+import { sessionsApi } from "@/lib/api";
 import { wsClient } from "@/lib/websocket";
 import {
   buildRouletteStrip,
@@ -154,6 +155,26 @@ export const RouletteWinner = ({ items, winnerId, onComplete, isHost = false, se
       unsubscribe();
     };
   }, [isHost]);
+
+  // Backup for a missed roulette_started broadcast (e.g. a phone that slept through it): the
+  // server records when the host spun, so a waiting participant checks for that too.
+  useEffect(() => {
+    if (isHost || !sessionId || phase !== 'waiting') return;
+
+    const checkStarted = async () => {
+      if (hasStartedRef.current) return;
+      const { data } = await sessionsApi.getById(sessionId);
+      if (data?.session?.roulette_started_at) {
+        console.log('[Roulette] Spin detected via periodic check, starting animation');
+        runAnimation();
+      }
+    };
+
+    // Right away too: the host may have spun while this client was still catching up
+    checkStarted();
+    const intervalId = setInterval(checkStarted, 2000);
+    return () => clearInterval(intervalId);
+  }, [isHost, sessionId, phase]);
 
   // Cleanup on unmount
   useEffect(() => {

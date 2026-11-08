@@ -72,7 +72,7 @@ export const PlaybackControl = ({
     try {
       await navigator.clipboard.writeText(getPlexWebUrl());
       setCopied(true);
-      toast.success('Link copied!');
+      // toast.success('Link copied!'); // disabled for now. too much noise imo
       setTimeout(() => setCopied(false), 2000);
     } catch (e) {
       toast.error('Failed to copy link');

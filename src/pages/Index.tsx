@@ -61,7 +61,7 @@ const Index = () => {
         if (data?.hasAccess) {
           setAccessError(null);
           setCreatePlexError(null);
-          toast.success(`Signed in as ${user.username}!`);
+          // toast.success(`Signed in as ${user.username}!`); // disabled for now. too much noise imo
           await Promise.all([refreshGate(), refreshCreateGate()]);
         } else {
           const message =

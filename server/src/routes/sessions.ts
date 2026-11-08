@@ -19,6 +19,17 @@ const ABSTAIN_ITEM_KEY = '__no_preference__';
 // Keep in sync with TOP_LIKED_LIMIT in src/pages/TimedResults.tsx.
 const TOP_LIKED_LIMIT = 6;
 
+// sessions.tied_items holds a JSON array of item keys, or NULL when the final vote had no tie.
+function parseTiedItems(value: unknown): string[] {
+  if (typeof value !== 'string') return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 function getSessionSettings(db: any): any {
   const row = db.prepare('SELECT value FROM app_config WHERE key = ?').get('session_settings') as { value: string } | undefined;
   if (!row) return {};
@@ -1005,16 +1016,17 @@ function finalizeVoting(db: any, sessionId: string): {
     ? topItems[0]
     : topItems[Math.floor(Math.random() * topItems.length)];
 
-  // Update session
+  const tiedItems = wasTie ? topItems : [];
+
+  // Update session. The tie is stored too, so a client that missed the voting_complete
+  // broadcast can still show the roulette.
   db.prepare(`
-    UPDATE sessions SET winner_item_key = ?, status = 'completed', updated_at = datetime('now')
+    UPDATE sessions SET winner_item_key = ?, tied_items = ?, status = 'completed', updated_at = datetime('now')
     WHERE id = ?
-  `).run(winner, sessionId);
+  `).run(winner, tiedItems.length > 0 ? JSON.stringify(tiedItems) : null, sessionId);
 
   // Record in history
   recordSessionHistory(db, sessionId, winner);
-
-  const tiedItems = wasTie ? topItems : [];
 
   // Broadcast result
   broadcastToSession(sessionId, 'voting_complete', {
@@ -1107,9 +1119,11 @@ router.post('/:id/finish-voting', (req, res) => {
       return res.status(403).json({ error: 'Only the host can end voting' });
     }
 
-    // Already decided (double click, or the last vote landed first) - report the stored winner.
+    // Already decided (double click, or the last vote landed first) - report the stored result,
+    // tie included: a host who missed voting_complete must still get the roulette to spin.
     if (session.status === 'completed' && session.winner_item_key) {
-      return res.json({ success: true, winner: session.winner_item_key, wasTie: false, tiedItems: [] });
+      const tiedItems = parseTiedItems(session.tied_items);
+      return res.json({ success: true, winner: session.winner_item_key, wasTie: tiedItems.length > 1, tiedItems });
     }
 
     console.log(`[Sessions] Host ended voting early for session ${id}`);
@@ -1218,7 +1232,12 @@ router.post('/:id/broadcast-roulette', (req, res) => {
     const { id } = req.params;
     
     console.log(`[Sessions] Broadcasting roulette_started for session ${id}`);
-    
+
+    // Remember the first spin so a participant who misses the broadcast can pick it up by polling
+    getDb().prepare(
+      "UPDATE sessions SET roulette_started_at = COALESCE(roulette_started_at, datetime('now')) WHERE id = ?"
+    ).run(id);
+
     // Broadcast to all participants in the session
     broadcastToSession(id, 'roulette_started', {});
     

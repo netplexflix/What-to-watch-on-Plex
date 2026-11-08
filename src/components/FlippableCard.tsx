@@ -213,17 +213,18 @@ export const FlippableCard = ({
   };
 
   return (
+    <>
     <motion.div
       initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: animationDelay }}
+      // Dimming and scaling go through framer: its inline opacity/transform override Tailwind classes.
+      animate={{ opacity: isDisabled && !isSelected ? 0.4 : 1, y: 0, scale: isSelected ? 1.02 : 1 }}
+      whileHover={isSelected || isDisabled ? undefined : { scale: 1.01 }}
+      // The entrance is staggered; selection and hover respond without that delay.
+      transition={{ delay: animationDelay, scale: { duration: 0.2 } }}
       onClick={handleTap}
       className={cn(
-        "relative rounded-xl overflow-hidden aspect-[2/3] transition-all duration-200 cursor-pointer select-none",
-        isSelected 
-          ? "ring-4 ring-primary ring-offset-2 ring-offset-background scale-[1.02]" 
-          : "hover:scale-[1.01]",
-        isDisabled && !isSelected && "opacity-40",
+        "relative rounded-xl overflow-hidden aspect-[2/3] transition-shadow duration-200 cursor-pointer select-none",
+        isSelected && "ring-4 ring-primary ring-offset-2 ring-offset-background",
         className
       )}
       style={{ perspective: "1000px" }}
@@ -390,15 +391,18 @@ export const FlippableCard = ({
           )}
         </div>
       </div>
-
-      {showTrailerButton && trailerPartKey && (
-        <TrailerModal
-          partKey={trailerPartKey}
-          title={item.title}
-          open={showTrailer}
-          onOpenChange={setShowTrailer}
-        />
-      )}
     </motion.div>
+
+    {/* Outside the tappable card: React events bubble through the dialog's portal, so a tap on
+        the trailer's close button or backdrop would otherwise select this poster. */}
+    {showTrailerButton && trailerPartKey && (
+      <TrailerModal
+        partKey={trailerPartKey}
+        title={item.title}
+        open={showTrailer}
+        onOpenChange={setShowTrailer}
+      />
+    )}
+    </>
   );
 };

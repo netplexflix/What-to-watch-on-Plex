@@ -704,75 +704,65 @@ async function getShowLanguagesFromEpisode(
   }
 }
 
-// Refresh cache with progress tracking
-router.post('/refresh-cache', requireAdmin, async (req, res) => {
+type CacheRefreshOutcome =
+  | {
+      success: true;
+      mediaCount: number;
+      movieCount: number;
+      showCount: number;
+      languageCount: number;
+      labelsCount: number;
+      collectionsCount: number;
+    }
+  | { success: false; reason: 'running' | 'not_configured' | 'failed'; error: string };
+
+// Rebuild every library cache (media items, languages, labels, collections) - shared by the admin
+// button and the nightly auto refresh. Everything is fetched from Plex before anything is written,
+// then swapped in with one transaction: a refresh that fails part-way (Plex restarting for an
+// update, a library that won't load) keeps the previous cache instead of leaving it empty or
+// half-filled until the next successful refresh.
+async function runCacheRefresh(
+  libraryKeys: string[] | undefined,
+  type: 'manual' | 'auto'
+): Promise<CacheRefreshOutcome> {
   if (cacheRefreshProgress.isRunning) {
-    return res.status(409).json({ error: 'Cache refresh already in progress' });
+    return { success: false, reason: 'running', error: 'Cache refresh already in progress' };
   }
 
+  const config = getPlexConfig();
+  if (!config?.plex_url || !config?.plex_token) {
+    return { success: false, reason: 'not_configured', error: 'Plex not configured' };
+  }
+
+  const selectedLibraries: string[] = libraryKeys || config.libraries || [];
+  const sortedLibraryKeys = [...selectedLibraries].sort().join(',');
+
+  cacheRefreshProgress.isRunning = true;
+  cacheRefreshProgress.phase = 'starting';
+  cacheRefreshProgress.moviesProcessed = 0;
+  cacheRefreshProgress.moviesTotal = 0;
+  cacheRefreshProgress.showsProcessed = 0;
+  cacheRefreshProgress.showsTotal = 0;
+  cacheRefreshProgress.languagesFound = 0;
+  cacheRefreshProgress.collectionsProcessed = 0;
+  cacheRefreshProgress.labelsFound = 0;
+  cacheRefreshProgress.error = undefined;
+
   try {
-    const config = getPlexConfig();
-    if (!config?.plex_url || !config?.plex_token) {
-      return res.status(400).json({ error: 'Plex not configured' });
-    }
-    
-    const { libraryKeys } = req.body;
-    const selectedLibraries = libraryKeys || config.libraries || [];
-    const sortedLibraryKeys = [...selectedLibraries].sort().join(',');
-    
-    cacheRefreshProgress.isRunning = true;
-    cacheRefreshProgress.phase = 'starting';
-    cacheRefreshProgress.moviesProcessed = 0;
-    cacheRefreshProgress.moviesTotal = 0;
-    cacheRefreshProgress.showsProcessed = 0;
-    cacheRefreshProgress.showsTotal = 0;
-    cacheRefreshProgress.languagesFound = 0;
-    cacheRefreshProgress.collectionsProcessed = 0;
-    cacheRefreshProgress.labelsFound = 0;
-    cacheRefreshProgress.error = undefined;
-    
-    const db = getDb();
-    
-    db.prepare('DELETE FROM media_items_cache WHERE library_keys = ?').run(sortedLibraryKeys);
-    db.prepare('DELETE FROM library_languages_cache WHERE library_keys = ?').run(sortedLibraryKeys);
-    db.prepare('DELETE FROM media_labels_cache WHERE library_keys = ?').run(sortedLibraryKeys);
-    db.prepare('DELETE FROM collections_cache').run();
-    db.prepare('DELETE FROM collection_items_cache').run();
-    
-    console.log('[Cache] Starting cache refresh for libraries:', selectedLibraries);
-    
+    console.log(`[Cache] Starting ${type} cache refresh for libraries:`, selectedLibraries);
+
+    // failOnError: a library that can't be read fails the refresh instead of being silently left out
     const { items: movieItems, languages: movieLanguages, labels: movieLabels } = await fetchMediaItemsWithLanguagesAndProgress(
-      config.plex_url, config.plex_token, selectedLibraries, 'movies'
+      config.plex_url, config.plex_token, selectedLibraries, 'movies', true
     );
     const { items: showItems, languages: showLanguages, labels: showLabels } = await fetchMediaItemsWithLanguagesAndProgress(
-      config.plex_url, config.plex_token, selectedLibraries, 'shows'
+      config.plex_url, config.plex_token, selectedLibraries, 'shows', true
     );
-    
+
     console.log(`[Cache] Fetched ${movieItems.length} movies and ${showItems.length} shows`);
-    
+
     cacheRefreshProgress.phase = 'languages';
-    
-    const insertMedia = db.prepare(`
-      INSERT INTO media_items_cache (id, library_keys, media_type, items, item_count, updated_at)
-      VALUES (?, ?, ?, ?, ?, datetime('now'))
-      ON CONFLICT(library_keys, media_type) DO UPDATE SET 
-        items = excluded.items, 
-        item_count = excluded.item_count, 
-        updated_at = datetime('now')
-    `);
-    
-    if (movieItems.length > 0) {
-      insertMedia.run(generateId(), sortedLibraryKeys, 'movies', JSON.stringify(movieItems), movieItems.length);
-    }
-    if (showItems.length > 0) {
-      insertMedia.run(generateId(), sortedLibraryKeys, 'shows', JSON.stringify(showItems), showItems.length);
-    }
-    
-    const bothItems = [...movieItems, ...showItems];
-    if (bothItems.length > 0) {
-      insertMedia.run(generateId(), sortedLibraryKeys, 'both', JSON.stringify(bothItems), bothItems.length);
-    }
-    
+
     const mergedLanguages = new Map<string, number>();
     for (const [lang, count] of movieLanguages) {
       mergedLanguages.set(lang, (mergedLanguages.get(lang) || 0) + count);
@@ -780,24 +770,14 @@ router.post('/refresh-cache', requireAdmin, async (req, res) => {
     for (const [lang, count] of showLanguages) {
       mergedLanguages.set(lang, (mergedLanguages.get(lang) || 0) + count);
     }
-    
+
     const languages = Array.from(mergedLanguages.entries())
       .map(([language, count]) => ({ language, count }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 20);
-    
+
     cacheRefreshProgress.languagesFound = languages.length;
     console.log('[Cache] Languages found:', languages.length);
-    
-    if (languages.length > 0) {
-      db.prepare(`
-        INSERT INTO library_languages_cache (id, library_keys, languages, updated_at)
-        VALUES (?, ?, ?, datetime('now'))
-        ON CONFLICT(library_keys) DO UPDATE SET 
-          languages = excluded.languages, 
-          updated_at = datetime('now')
-      `).run(generateId(), sortedLibraryKeys, JSON.stringify(languages));
-    }
 
     const mergedLabels = new Map<string, number>();
     for (const [label, count] of movieLabels) {
@@ -814,94 +794,166 @@ router.post('/refresh-cache', requireAdmin, async (req, res) => {
     cacheRefreshProgress.labelsFound = labels.length;
     console.log('[Cache] Labels found:', labels.length);
 
-    if (labels.length > 0) {
-      db.prepare(`
-        INSERT INTO media_labels_cache (id, library_keys, labels, updated_at)
-        VALUES (?, ?, ?, datetime('now'))
-        ON CONFLICT(library_keys) DO UPDATE SET 
-          labels = excluded.labels, 
-          updated_at = datetime('now')
-      `).run(generateId(), sortedLibraryKeys, JSON.stringify(labels));
-    }
-    
     cacheRefreshProgress.phase = 'collections';
     console.log('[Cache] Pre-caching collections...');
-    const collectionsCount = await preCacheCollections(config.plex_url, config.plex_token, selectedLibraries);
+    const collections = await fetchCollectionsForCache(config.plex_url, config.plex_token, selectedLibraries);
+    const collectionsCount = collections?.items.length ?? 0;
+
+    const bothItems = [...movieItems, ...showItems];
+    const mediaCount = bothItems.length;
+
+    const db = getDb();
+    const upsertMedia = db.prepare(`
+      INSERT INTO media_items_cache (id, library_keys, media_type, items, item_count, updated_at)
+      VALUES (?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(library_keys, media_type) DO UPDATE SET
+        items = excluded.items,
+        item_count = excluded.item_count,
+        updated_at = datetime('now')
+    `);
+
+    // Only now that everything is in hand: replace the old cache in one step
+    db.transaction(() => {
+      db.prepare('DELETE FROM media_items_cache WHERE library_keys = ?').run(sortedLibraryKeys);
+      db.prepare('DELETE FROM library_languages_cache WHERE library_keys = ?').run(sortedLibraryKeys);
+      db.prepare('DELETE FROM media_labels_cache WHERE library_keys = ?').run(sortedLibraryKeys);
+      // Collection item lists are refetched on demand by /get-collection-items
+      db.prepare('DELETE FROM collections_cache').run();
+      db.prepare('DELETE FROM collection_items_cache').run();
+
+      if (movieItems.length > 0) {
+        upsertMedia.run(generateId(), sortedLibraryKeys, 'movies', JSON.stringify(movieItems), movieItems.length);
+      }
+      if (showItems.length > 0) {
+        upsertMedia.run(generateId(), sortedLibraryKeys, 'shows', JSON.stringify(showItems), showItems.length);
+      }
+      if (bothItems.length > 0) {
+        upsertMedia.run(generateId(), sortedLibraryKeys, 'both', JSON.stringify(bothItems), bothItems.length);
+      }
+
+      if (languages.length > 0) {
+        db.prepare(`
+          INSERT INTO library_languages_cache (id, library_keys, languages, updated_at)
+          VALUES (?, ?, ?, datetime('now'))
+          ON CONFLICT(library_keys) DO UPDATE SET
+            languages = excluded.languages,
+            updated_at = datetime('now')
+        `).run(generateId(), sortedLibraryKeys, JSON.stringify(languages));
+      }
+
+      if (labels.length > 0) {
+        db.prepare(`
+          INSERT INTO media_labels_cache (id, library_keys, labels, updated_at)
+          VALUES (?, ?, ?, datetime('now'))
+          ON CONFLICT(library_keys) DO UPDATE SET
+            labels = excluded.labels,
+            updated_at = datetime('now')
+        `).run(generateId(), sortedLibraryKeys, JSON.stringify(labels));
+      }
+
+      if (collections) {
+        db.prepare(`
+          INSERT INTO collections_cache (id, cache_key, collections, updated_at)
+          VALUES (?, ?, ?, datetime('now'))
+          ON CONFLICT(cache_key) DO UPDATE SET
+            collections = excluded.collections,
+            updated_at = datetime('now')
+        `).run(generateId(), collections.cacheKey, JSON.stringify(collections.items));
+      }
+
+      db.prepare(`
+        INSERT INTO app_config (key, value, updated_at)
+        VALUES ('last_cache_refresh', ?, datetime('now'))
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+      `).run(JSON.stringify({
+        timestamp: new Date().toISOString(),
+        mediaCount,
+        movieCount: movieItems.length,
+        showCount: showItems.length,
+        languageCount: languages.length,
+        labelsCount: labels.length,
+        type,
+        success: true
+      }));
+    })();
+
     cacheRefreshProgress.collectionsProcessed = collectionsCount;
-    
     cacheRefreshProgress.phase = 'complete';
-    
-    db.prepare(`
-      INSERT INTO app_config (key, value, updated_at)
-      VALUES ('last_cache_refresh', ?, datetime('now'))
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
-    `).run(JSON.stringify({ 
-      timestamp: new Date().toISOString(),
-      mediaCount: movieItems.length + showItems.length,
-      movieCount: movieItems.length,
-      showCount: showItems.length,
-      languageCount: languages.length,
-      labelsCount: labels.length,
-      type: 'manual',
-      success: true
-    }));
-    
-    res.json({
+
+    return {
       success: true,
-      mediaCount: movieItems.length + showItems.length,
+      mediaCount,
       movieCount: movieItems.length,
       showCount: showItems.length,
       languageCount: languages.length,
       labelsCount: labels.length,
       collectionsCount,
-    });
+    };
   } catch (error) {
-    console.error('Error refreshing cache:', error);
-    cacheRefreshProgress.error = error instanceof Error ? error.message : 'Unknown error';
+    console.error(`[Cache] ${type} cache refresh failed, keeping the existing cache:`, error);
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    cacheRefreshProgress.error = message;
     cacheRefreshProgress.phase = 'error';
-    res.status(500).json({ error: 'Failed to refresh cache' });
+    return { success: false, reason: 'failed', error: message };
   } finally {
     setTimeout(() => {
       cacheRefreshProgress.isRunning = false;
     }, 2000);
   }
+}
+
+// Refresh cache with progress tracking
+router.post('/refresh-cache', requireAdmin, async (req, res) => {
+  const outcome = await runCacheRefresh(req.body?.libraryKeys, 'manual');
+
+  if (outcome.success) {
+    return res.json(outcome);
+  }
+
+  if (outcome.reason === 'running') {
+    return res.status(409).json({ error: outcome.error });
+  }
+  if (outcome.reason === 'not_configured') {
+    return res.status(400).json({ error: outcome.error });
+  }
+  res.status(500).json({ error: 'Failed to refresh cache' });
 });
 
-// Helper function to pre-cache collections
-async function preCacheCollections(
+// Collections for a cache refresh, fetched up front so the cache swap stays all-or-nothing.
+// Best effort: when this fails the collections cache is simply cleared, and /get-collections
+// refills it on demand.
+async function fetchCollectionsForCache(
   plexUrl: string,
   plexToken: string,
   libraryKeys: string[]
-): Promise<number> {
-  const db = getDb();
-  
+): Promise<{ cacheKey: string; items: any[] } | null> {
   try {
     const libResponse = await fetch(`${plexUrl}/library/sections?X-Plex-Token=${plexToken}`, {
       headers: { Accept: 'application/json' },
     });
     const libData = await libResponse.json();
     const directories = libData.MediaContainer?.Directory || [];
-    
+
     const libraryTypeMap = new Map<string, string>();
     directories.forEach((dir: any) => libraryTypeMap.set(dir.key, dir.type));
-    
+
     const sortedLibraryKeys = [...libraryKeys].sort().join(',');
     const cacheKey = `${sortedLibraryKeys}:all`;
-    
+
     const allCollections: any[] = [];
-    
+
     for (const libraryKey of libraryKeys) {
       try {
         const response = await fetch(
           `${plexUrl}/library/sections/${libraryKey}/collections?X-Plex-Token=${plexToken}`,
           { headers: { Accept: 'application/json' } }
         );
-        
+
         if (!response.ok) continue;
-        
+
         const data = await response.json();
         const collections = data.MediaContainer?.Metadata || [];
-        
+
         for (const collection of collections) {
           allCollections.push({
             ratingKey: collection.ratingKey,
@@ -916,22 +968,14 @@ async function preCacheCollections(
         console.error(`[Plex] Error fetching collections for library ${libraryKey}:`, e);
       }
     }
-    
+
     allCollections.sort((a, b) => a.title.localeCompare(b.title));
-    
-    db.prepare(`
-      INSERT INTO collections_cache (id, cache_key, collections, updated_at)
-      VALUES (?, ?, ?, datetime('now'))
-      ON CONFLICT(cache_key) DO UPDATE SET 
-        collections = excluded.collections, 
-        updated_at = datetime('now')
-    `).run(generateId(), cacheKey, JSON.stringify(allCollections));
-    
-    console.log(`[Cache] Pre-cached ${allCollections.length} collections`);
-    return allCollections.length;
+
+    console.log(`[Cache] Fetched ${allCollections.length} collections`);
+    return { cacheKey, items: allCollections };
   } catch (e) {
     console.error('[Cache] Error pre-caching collections:', e);
-    return 0;
+    return null;
   }
 }
 
@@ -2220,20 +2264,26 @@ router.get('/trailer-info', async (req, res) => {
 
 // ============ HELPER FUNCTIONS ============
 
-// Fetch media items with proper language detection and progress tracking
+// Fetch media items with proper language detection and progress tracking.
+// failOnError: throw when a library can't be listed, rather than skipping it. A cache refresh
+// needs that, so it never stores a library list with whole libraries missing.
 async function fetchMediaItemsWithLanguagesAndProgress(
   plexUrl: string,
   plexToken: string,
   libraryKeys: string[],
-  mediaType?: string
+  mediaType?: string,
+  failOnError = false
 ): Promise<{ items: any[]; languages: Map<string, number>; labels: Map<string, number> }> {
   const allItems: any[] = [];
   const languageCounts = new Map<string, number>();
   const labelCounts = new Map<string, number>();
-  
+
   const libResponse = await fetch(`${plexUrl}/library/sections?X-Plex-Token=${plexToken}`, {
     headers: { Accept: 'application/json' },
   });
+  if (!libResponse.ok) {
+    throw new Error(`Failed to list Plex libraries: HTTP ${libResponse.status}`);
+  }
   const libData = await libResponse.json();
   const directories = libData.MediaContainer?.Directory || [];
   
@@ -2291,13 +2341,13 @@ async function fetchMediaItemsWithLanguagesAndProgress(
       );
       
       if (!response.ok) {
-        console.error(`[Plex] Failed to fetch library ${libraryKey}: ${response.status}`);
-        continue;
+        // Handled (logged, then skipped or rethrown) by the catch below
+        throw new Error(`Failed to fetch library ${libraryKey}: HTTP ${response.status}`);
       }
-      
+
       const data = await response.json();
       const items = data.MediaContainer?.Metadata || [];
-      
+
       console.log(`[Plex] Processing ${items.length} ${libraryType}s from library ${libraryKey}`);
       
       if (libraryType === 'movie') {
@@ -2386,6 +2436,7 @@ async function fetchMediaItemsWithLanguagesAndProgress(
       }
     } catch (e) {
       console.error(`[Plex] Error fetching items for library ${libraryKey}:`, e);
+      if (failOnError) throw e;
     }
   }
   
@@ -2961,154 +3012,17 @@ router.get('/server-info', async (req, res) => {
 });
 
 // Direct cache refresh for internal use (auto-refresh scheduler) - bypasses HTTP auth
-export async function performCacheRefreshDirect(libraryKeys: string[]): Promise<{ success: boolean; mediaCount?: number; error?: string }> {
-  if (cacheRefreshProgress.isRunning) {
-    return { success: false, error: 'Cache refresh already in progress' };
+export async function performCacheRefreshDirect(libraryKeys: string[]): Promise<{
+  success: boolean;
+  mediaCount?: number;
+  error?: string;
+  alreadyRunning?: boolean;
+}> {
+  const outcome = await runCacheRefresh(libraryKeys, 'auto');
+  if (outcome.success) {
+    return { success: true, mediaCount: outcome.mediaCount };
   }
-
-  try {
-    const config = getPlexConfig();
-    if (!config?.plex_url || !config?.plex_token) {
-      return { success: false, error: 'Plex not configured' };
-    }
-
-    const selectedLibraries = libraryKeys || config.libraries || [];
-    const sortedLibraryKeys = [...selectedLibraries].sort().join(',');
-
-    cacheRefreshProgress.isRunning = true;
-    cacheRefreshProgress.phase = 'starting';
-    cacheRefreshProgress.moviesProcessed = 0;
-    cacheRefreshProgress.moviesTotal = 0;
-    cacheRefreshProgress.showsProcessed = 0;
-    cacheRefreshProgress.showsTotal = 0;
-    cacheRefreshProgress.languagesFound = 0;
-    cacheRefreshProgress.collectionsProcessed = 0;
-    cacheRefreshProgress.labelsFound = 0;
-    cacheRefreshProgress.error = undefined;
-
-    const db = getDb();
-
-    db.prepare('DELETE FROM media_items_cache WHERE library_keys = ?').run(sortedLibraryKeys);
-    db.prepare('DELETE FROM library_languages_cache WHERE library_keys = ?').run(sortedLibraryKeys);
-    db.prepare('DELETE FROM media_labels_cache WHERE library_keys = ?').run(sortedLibraryKeys);
-    db.prepare('DELETE FROM collections_cache').run();
-    db.prepare('DELETE FROM collection_items_cache').run();
-
-    console.log('[Cache] Starting internal cache refresh for libraries:', selectedLibraries);
-
-    const { items: movieItems, languages: movieLanguages, labels: movieLabels } = await fetchMediaItemsWithLanguagesAndProgress(
-      config.plex_url, config.plex_token, selectedLibraries, 'movies'
-    );
-    const { items: showItems, languages: showLanguages, labels: showLabels } = await fetchMediaItemsWithLanguagesAndProgress(
-      config.plex_url, config.plex_token, selectedLibraries, 'shows'
-    );
-
-    cacheRefreshProgress.phase = 'languages';
-
-    const insertMedia = db.prepare(`
-      INSERT INTO media_items_cache (id, library_keys, media_type, items, item_count, updated_at)
-      VALUES (?, ?, ?, ?, ?, datetime('now'))
-      ON CONFLICT(library_keys, media_type) DO UPDATE SET
-        items = excluded.items,
-        item_count = excluded.item_count,
-        updated_at = datetime('now')
-    `);
-
-    if (movieItems.length > 0) {
-      insertMedia.run(generateId(), sortedLibraryKeys, 'movies', JSON.stringify(movieItems), movieItems.length);
-    }
-    if (showItems.length > 0) {
-      insertMedia.run(generateId(), sortedLibraryKeys, 'shows', JSON.stringify(showItems), showItems.length);
-    }
-
-    const bothItems = [...movieItems, ...showItems];
-    if (bothItems.length > 0) {
-      insertMedia.run(generateId(), sortedLibraryKeys, 'both', JSON.stringify(bothItems), bothItems.length);
-    }
-
-    const mergedLanguages = new Map<string, number>();
-    for (const [lang, count] of movieLanguages) {
-      mergedLanguages.set(lang, (mergedLanguages.get(lang) || 0) + count);
-    }
-    for (const [lang, count] of showLanguages) {
-      mergedLanguages.set(lang, (mergedLanguages.get(lang) || 0) + count);
-    }
-
-    const languages = Array.from(mergedLanguages.entries())
-      .map(([language, count]) => ({ language, count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 20);
-
-    cacheRefreshProgress.languagesFound = languages.length;
-
-    if (languages.length > 0) {
-      db.prepare(`
-        INSERT INTO library_languages_cache (id, library_keys, languages, updated_at)
-        VALUES (?, ?, ?, datetime('now'))
-        ON CONFLICT(library_keys) DO UPDATE SET
-          languages = excluded.languages,
-          updated_at = datetime('now')
-      `).run(generateId(), sortedLibraryKeys, JSON.stringify(languages));
-    }
-
-    const mergedLabels = new Map<string, number>();
-    for (const [label, count] of movieLabels) {
-      mergedLabels.set(label, (mergedLabels.get(label) || 0) + count);
-    }
-    for (const [label, count] of showLabels) {
-      mergedLabels.set(label, (mergedLabels.get(label) || 0) + count);
-    }
-
-    const labels = Array.from(mergedLabels.entries())
-      .map(([label, count]) => ({ label, count }))
-      .sort((a, b) => b.count - a.count);
-
-    cacheRefreshProgress.labelsFound = labels.length;
-
-    if (labels.length > 0) {
-      db.prepare(`
-        INSERT INTO media_labels_cache (id, library_keys, labels, updated_at)
-        VALUES (?, ?, ?, datetime('now'))
-        ON CONFLICT(library_keys) DO UPDATE SET
-          labels = excluded.labels,
-          updated_at = datetime('now')
-      `).run(generateId(), sortedLibraryKeys, JSON.stringify(labels));
-    }
-
-    cacheRefreshProgress.phase = 'collections';
-    const collectionsCount = await preCacheCollections(config.plex_url, config.plex_token, selectedLibraries);
-    cacheRefreshProgress.collectionsProcessed = collectionsCount;
-
-    cacheRefreshProgress.phase = 'complete';
-
-    const mediaCount = movieItems.length + showItems.length;
-
-    db.prepare(`
-      INSERT INTO app_config (key, value, updated_at)
-      VALUES ('last_cache_refresh', ?, datetime('now'))
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
-    `).run(JSON.stringify({
-      timestamp: new Date().toISOString(),
-      mediaCount,
-      movieCount: movieItems.length,
-      showCount: showItems.length,
-      languageCount: languages.length,
-      labelsCount: labels.length,
-      type: 'auto',
-      success: true
-    }));
-
-    return { success: true, mediaCount };
-  } catch (error) {
-    console.error('Error in direct cache refresh:', error);
-    cacheRefreshProgress.error = error instanceof Error ? error.message : 'Unknown error';
-    cacheRefreshProgress.phase = 'error';
-    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
-  } finally {
-    setTimeout(() => {
-      cacheRefreshProgress.isRunning = false;
-    }, 2000);
-  }
+  return { success: false, error: outcome.error, alreadyRunning: outcome.reason === 'running' };
 }
 
 export { router as plexRoutes };

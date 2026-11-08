@@ -63,7 +63,7 @@ const JoinSession = () => {
       setDisplayName(user.username || "");
       setJoinAsGuest(false);
       saveUserIdentity({ type: 'plex', displayName: user.username || "", plexToken: token, plexUser: user });
-      toast.success(`Signed in as ${user.username}!`);
+      // toast.success(`Signed in as ${user.username}!`); // disabled for now. too much noise imo
     },
     onError: (error) => {
       toast.error(error);

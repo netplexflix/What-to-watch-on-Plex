@@ -38,6 +38,60 @@ const SESSION_MODES: {
   },
 ];
 
+// Compact two-option tile: icon inline with the title keeps the join/source rows short on phones.
+const ChoiceTile = ({
+  selected,
+  checked = selected,
+  icon: Icon,
+  spinning = false,
+  title,
+  description,
+  onClick,
+  disabled,
+  className,
+}: {
+  selected: boolean;
+  checked?: boolean;
+  icon: LucideIcon;
+  spinning?: boolean;
+  title: string;
+  description: string;
+  onClick: () => void;
+  disabled?: boolean;
+  className?: string;
+}) => (
+  <button
+    onClick={onClick}
+    disabled={disabled}
+    className={cn(
+      "relative px-2 py-2.5 rounded-xl transition-all duration-200",
+      selected
+        ? "glass-card border-2 border-primary glow-primary"
+        : "glass-card border-2 border-transparent hover:border-muted-foreground/30",
+      className
+    )}
+  >
+    {/* Sits on the corner: inside the tile it would collide with the inline title on narrow phones */}
+    {checked && (
+      <div className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-primary ring-2 ring-background flex items-center justify-center">
+        <Check size={12} className="text-primary-foreground" />
+      </div>
+    )}
+    <div className="flex items-center justify-center gap-1.5 px-1">
+      <Icon
+        className={cn(
+          "shrink-0",
+          spinning && "animate-spin",
+          selected ? "text-primary" : "text-muted-foreground"
+        )}
+        size={18}
+      />
+      <p className="font-medium text-sm text-foreground truncate">{title}</p>
+    </div>
+    <p className="text-xs text-muted-foreground leading-tight mt-0.5">{description}</p>
+  </button>
+);
+
 const CreateSession = () => {
   const navigate = useNavigate();
   const haptics = useHaptics();
@@ -111,7 +165,7 @@ const CreateSession = () => {
       setDisplayName(user.username || "");
       setJoinAsGuest(false);
       saveUserIdentity({ type: 'plex', displayName: user.username || "", plexToken: token, plexUser: user });
-      toast.success(`Signed in as ${user.username}!`);
+      // toast.success(`Signed in as ${user.username}!`); // disabled for now. too much noise imo
     },
     onError: (error) => {
       toast.error(error);
@@ -288,6 +342,13 @@ const CreateSession = () => {
     setSessionMode(mode);
   };
 
+  // A Duration/Matches panel opening can push the Create button off screen (e.g. signed in with
+  // Plex, so the Source row is showing). The options above are done by then: bring the end of the
+  // form into view. Runs once the panel's height animation ends; a no-op when the page fits.
+  const scrollToFormEnd = () => {
+    window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" });
+  };
+
   const handleMinutesChange = (delta: number) => {
     haptics.selection();
     setTimedMinutes((prev) => Math.max(1, Math.min(60, prev + delta)));
@@ -367,12 +428,13 @@ const CreateSession = () => {
   }
 
   return (
-    <div className="min-h-screen flex flex-col relative overflow-hidden">
+    <div className="min-h-dvh flex flex-col relative overflow-hidden">
       <div className="fixed inset-0 bg-background">
         <div className="absolute inset-0 bg-gradient-to-br from-primary/5 via-transparent to-accent/5" />
       </div>
 
-      <div className="relative z-10 p-4">
+      {/* Back button and logo share one row so the form starts higher on phones */}
+      <div className="relative z-10 flex items-center justify-between px-4 pt-2">
         <Button
           variant="ghost"
           size="icon"
@@ -381,26 +443,25 @@ const CreateSession = () => {
         >
           <ArrowLeft size={24} />
         </Button>
+        <Logo size="md" />
+        {/* Mirrors the back button's width to keep the logo centred */}
+        <div className="w-10" aria-hidden="true" />
       </div>
 
-      <div className="flex-1 flex flex-col items-center px-6 relative z-10 pb-8 overflow-y-auto">
+      <div className="flex-1 flex flex-col items-center px-6 relative z-10 pb-4 overflow-y-auto">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           className="w-full max-w-md"
         >
-          <div className="flex justify-center mb-6">
-            <Logo size="md" />
-          </div>
-
-          <h1 className="text-2xl font-bold text-foreground text-center mb-2">
+          <h1 className="text-2xl font-bold text-foreground text-center mt-1">
             Create a Session
           </h1>
-          <p className="text-muted-foreground text-center mb-6">
+          <p className="text-sm text-muted-foreground text-center mt-1 mb-4">
             Start a watch party and invite your friends
           </p>
 
-          <div className="space-y-5">
+          <div className="space-y-4">
             <div className="space-y-2">
               <label className="text-sm font-medium text-foreground">
                 Your Display Name
@@ -414,7 +475,7 @@ const CreateSession = () => {
                   value={displayName}
                   onChange={(e) => setDisplayName(e.target.value)}
                   placeholder="Enter your name"
-                  className="h-12 pl-10 bg-secondary border-secondary text-foreground placeholder:text-muted-foreground"
+                  className="h-11 pl-10 bg-secondary border-secondary text-foreground placeholder:text-muted-foreground"
                 />
               </div>
             </div>
@@ -432,79 +493,36 @@ const CreateSession = () => {
                 </div>
               </div>
             ) : (
-            <div className="space-y-3">
+            <div className="space-y-2">
               <label className="text-sm font-medium text-foreground">
                 How do you want to join?
               </label>
               <div className="grid grid-cols-2 gap-3">
-                <button
+                <ChoiceTile
+                  selected={joinAsGuest && !plexLoading}
+                  icon={User}
+                  title="Guest"
+                  description="See all items"
                   onClick={handleGuestSelect}
-                  className={cn(
-                    "relative p-4 rounded-xl transition-all duration-200",
-                    joinAsGuest && !plexLoading
-                      ? "glass-card border-2 border-primary glow-primary"
-                      : "glass-card border-2 border-transparent hover:border-muted-foreground/30"
-                  )}
-                >
-                  {joinAsGuest && !plexLoading && (
-                    <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-primary flex items-center justify-center">
-                      <Check size={12} className="text-primary-foreground" />
-                    </div>
-                  )}
-                  <User
-                    className={cn(
-                      "mx-auto mb-2",
-                      joinAsGuest && !plexLoading
-                        ? "text-primary"
-                        : "text-muted-foreground"
-                    )}
-                    size={24}
-                  />
-                  <p className="font-medium text-foreground">Guest</p>
-                  <p className="text-xs text-muted-foreground">See all items</p>
-                </button>
-                <button
-                  onClick={handlePlexSelect}
-                  disabled={plexLoading}
-                  className={cn(
-                    "relative p-4 rounded-xl transition-all duration-200",
-                    isPlexSelected
-                      ? "glass-card border-2 border-primary glow-primary"
-                      : "glass-card border-2 border-transparent hover:border-muted-foreground/30"
-                  )}
-                >
-                  {isPlexAuthenticated && (
-                    <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-primary flex items-center justify-center">
-                      <Check size={12} className="text-primary-foreground" />
-                    </div>
-                  )}
-                  {plexLoading ? (
-                    <Loader2
-                      className="mx-auto mb-2 animate-spin text-primary"
-                      size={24}
-                    />
-                  ) : (
-                    <LogIn
-                      className={cn(
-                        "mx-auto mb-2",
-                        isPlexSelected ? "text-primary" : "text-muted-foreground"
-                      )}
-                      size={24}
-                    />
-                  )}
-                  <p className="font-medium text-foreground">
-                    {plexUser ? plexUser.username : "Plex Login"}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {plexLoading
+                />
+                <ChoiceTile
+                  selected={isPlexSelected}
+                  checked={isPlexAuthenticated}
+                  icon={plexLoading ? Loader2 : LogIn}
+                  spinning={plexLoading}
+                  title={plexUser ? plexUser.username : "Plex Login"}
+                  description={
+                    plexLoading
                       ? "Connecting..."
                       : plexUser
                         ? "Signed in ✓"
                         : filterWatchedEnabled
                           ? "Filter watched"
-                          : "Sign in with Plex"}
-                  </p>
-                </button>
+                          : "Sign in with Plex"
+                  }
+                  onClick={handlePlexSelect}
+                  disabled={plexLoading}
+                />
               </div>
             </div>
             )}
@@ -513,81 +531,29 @@ const CreateSession = () => {
               <motion.div
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: "auto" }}
-                className="space-y-3"
+                className="space-y-2"
               >
                 <label className="text-sm font-medium text-foreground">
                   Source
                 </label>
                 <div className="grid grid-cols-2 gap-3">
-                  <button
+                  <ChoiceTile
+                    selected={!useWatchlist}
+                    icon={Library}
+                    title="Full Library"
+                    description="All available items"
                     onClick={() => {
                       haptics.selection();
                       setUseWatchlist(false);
                     }}
-                    className={cn(
-                      "relative p-4 rounded-xl transition-all duration-200",
-                      !useWatchlist
-                        ? "glass-card border-2 border-primary glow-primary"
-                        : "glass-card border-2 border-transparent hover:border-muted-foreground/30"
-                    )}
-                  >
-                    {!useWatchlist && (
-                      <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-primary flex items-center justify-center">
-                        <Check size={12} className="text-primary-foreground" />
-                      </div>
-                    )}
-                    <Library
-                      className={cn(
-                        "mx-auto mb-2",
-                        !useWatchlist ? "text-primary" : "text-muted-foreground"
-                      )}
-                      size={24}
-                    />
-                    <p className="font-medium text-foreground">Full Library</p>
-                    <p className="text-xs text-muted-foreground">
-                      All available items
-                    </p>
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (!watchlistDisabled) {
-                        haptics.selection();
-                        setUseWatchlist(true);
-                      }
-                    }}
-                    disabled={watchlistDisabled}
-                    className={cn(
-                      "relative p-4 rounded-xl transition-all duration-200",
-                      useWatchlist
-                        ? "glass-card border-2 border-primary glow-primary"
-                        : "glass-card border-2 border-transparent hover:border-muted-foreground/30",
-                      watchlistDisabled && "opacity-50 cursor-not-allowed"
-                    )}
-                  >
-                    {useWatchlist && (
-                      <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-primary flex items-center justify-center">
-                        <Check size={12} className="text-primary-foreground" />
-                      </div>
-                    )}
-                    {isLoadingWatchlist ? (
-                      <Loader2
-                        className="mx-auto mb-2 animate-spin text-muted-foreground"
-                        size={24}
-                      />
-                    ) : (
-                      <List
-                        className={cn(
-                          "mx-auto mb-2",
-                          useWatchlist
-                            ? "text-primary"
-                            : "text-muted-foreground"
-                        )}
-                        size={24}
-                      />
-                    )}
-                    <p className="font-medium text-foreground">My Watchlist</p>
-                    <p className="text-xs text-muted-foreground">
-                      {isLoadingWatchlist
+                  />
+                  <ChoiceTile
+                    selected={useWatchlist}
+                    icon={isLoadingWatchlist ? Loader2 : List}
+                    spinning={isLoadingWatchlist}
+                    title="My Watchlist"
+                    description={
+                      isLoadingWatchlist
                         ? "Loading..."
                         : watchlistLoadFailed
                           ? "Couldn't load from Plex"
@@ -595,16 +561,24 @@ const CreateSession = () => {
                           ? watchlistCount > 0
                             ? `${watchlistCount} item${watchlistCount !== 1 ? "s" : ""}`
                             : "No items in library"
-                          : "Loading..."}
-                    </p>
-                  </button>
+                          : "Loading..."
+                    }
+                    onClick={() => {
+                      if (!watchlistDisabled) {
+                        haptics.selection();
+                        setUseWatchlist(true);
+                      }
+                    }}
+                    disabled={watchlistDisabled}
+                    className={cn(watchlistDisabled && "opacity-50 cursor-not-allowed")}
+                  />
                 </div>
               </motion.div>
             )}
 
-            <MediaTypeSelector value={mediaType} onChange={setMediaType} />
+            <MediaTypeSelector value={mediaType} onChange={setMediaType} className="space-y-2" />
 
-            <div className="space-y-3">
+            <div className="space-y-2">
               <label className="text-sm font-medium text-foreground">
                 Session Mode
               </label>
@@ -655,16 +629,18 @@ const CreateSession = () => {
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: "auto" }}
                 exit={{ opacity: 0, height: 0 }}
-                className="glass-card rounded-xl p-4"
+                onAnimationComplete={scrollToFormEnd}
+                className="glass-card rounded-xl px-4 py-2"
               >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Clock size={18} className="text-muted-foreground" />
-                    <span className="text-sm text-muted-foreground">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 min-w-0">
+                    {/* Icons give way below 360px so the labels aren't truncated */}
+                    <Clock size={18} className="shrink-0 text-muted-foreground max-[359px]:hidden" />
+                    <span className="text-sm text-muted-foreground truncate">
                       Duration
                     </span>
                   </div>
-                  <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-2 shrink-0">
                     <button
                       onClick={() => handleMinutesChange(-1)}
                       disabled={timedMinutes <= 1}
@@ -677,7 +653,7 @@ const CreateSession = () => {
                     >
                       <Minus size={20} />
                     </button>
-                    <div className="w-20 text-center">
+                    <div className="w-16 text-center">
                       <span className="text-2xl font-bold text-foreground">
                         {timedMinutes}
                       </span>
@@ -707,16 +683,17 @@ const CreateSession = () => {
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: "auto" }}
                 exit={{ opacity: 0, height: 0 }}
-                className="glass-card rounded-xl p-4"
+                onAnimationComplete={scrollToFormEnd}
+                className="glass-card rounded-xl px-4 py-2"
               >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Target size={18} className="text-muted-foreground" />
-                    <span className="text-sm text-muted-foreground">
-                      Matches needed
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Target size={18} className="shrink-0 text-muted-foreground max-[359px]:hidden" />
+                    <span className="text-sm text-muted-foreground truncate">
+                      Matches
                     </span>
                   </div>
-                  <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-2 shrink-0">
                     <button
                       onClick={() => handleMatchTargetChange(-1)}
                       disabled={matchTargetCount <= 2}
@@ -729,7 +706,7 @@ const CreateSession = () => {
                     >
                       <Minus size={20} />
                     </button>
-                    <div className="w-20 text-center">
+                    <div className="w-16 text-center">
                       <span className="text-2xl font-bold text-foreground">
                         {matchTargetCount}
                       </span>
@@ -754,7 +731,7 @@ const CreateSession = () => {
             <Button
               onClick={handleCreate}
               disabled={!displayName.trim() || isCreating || plexLoading}
-              className="w-full h-14 text-lg font-semibold bg-primary hover:bg-primary/90 text-primary-foreground"
+              className="w-full h-12 text-lg font-semibold bg-primary hover:bg-primary/90 text-primary-foreground"
             >
               {isCreating ? (
                 <>

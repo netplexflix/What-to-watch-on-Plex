@@ -145,7 +145,7 @@ export const MatchCelebration = ({
 
       setInWatchlist(true);
       haptics.success();
-      toast.success('Added to watchlist!');
+      // toast.success('Added to watchlist!'); // disabled for now. too much noise imo
     } catch (err) {
       haptics.error();
       console.error('[MatchCelebration] Error adding to watchlist:', err);
@@ -211,9 +211,9 @@ export const MatchCelebration = ({
   const showWatchlistButton = hasCheckedToken && isPlexUser;
 
   return (
-    <div className={cn("relative flex flex-col items-center pt-4 pb-8 px-6 overflow-hidden", className)}>
+    <div className={cn("relative flex-1 w-full flex flex-col items-center pt-4 pb-6 px-6 overflow-hidden", className)}>
       <motion.div
-        className="relative z-10 text-center max-w-md mx-auto w-full"
+        className="relative z-10 text-center max-w-md mx-auto w-full flex-1 flex flex-col justify-center"
         initial={{ scale: 0, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
         transition={{ 
@@ -226,23 +226,24 @@ export const MatchCelebration = ({
         <h1 className="text-2xl md:text-3xl font-bold text-foreground mb-1">
           It's a Match!
         </h1>
-        <p className="text-muted-foreground mb-4">
+        <p className="text-muted-foreground mb-3">
           We have a winner! <PartyPopper className="inline w-4 h-4" />
         </p>
 
-        {/* Card - matching SwipeCard structure exactly */}
+        {/* Card - matching SwipeCard structure exactly. The slot takes whatever height the text
+            and buttons leave (so the page fits any phone); max-h mirrors the width caps at 2:3. */}
         <motion.div
-          className="relative w-full max-w-[340px] sm:max-w-[400px] md:max-w-[450px] mx-auto mb-4"
+          className="relative flex-1 min-h-[200px] max-h-[510px] sm:max-h-[600px] md:max-h-[675px] w-full max-w-[340px] sm:max-w-[400px] md:max-w-[450px] mx-auto mb-3"
           initial={{ y: 50, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
           transition={{ delay: 0.4 }}
         >
-          <div className="relative perspective-1000">
+          {/* Absolutely positioned so the query container has a definite height: on the flex
+              slot itself cqh resolved to 0, because the page only sets a min-height */}
+          <div className="absolute inset-0 flex items-center justify-center" style={{ containerType: "size" }}>
             <div
-              style={{ 
-                aspectRatio: "2/3",
-                minHeight: "480px",
-              }}
+              className="relative perspective-1000"
+              style={{ width: "min(100cqw, 100cqh * 2 / 3)", aspectRatio: "2 / 3" }}
             >
               {/* Card container with flip - click handler here like SwipeCard */}
               <div
@@ -399,7 +400,7 @@ export const MatchCelebration = ({
         </motion.div>
 
         <motion.p
-          className="text-lg font-medium text-foreground mb-4 flex items-center justify-center gap-2"
+          className="text-lg font-medium text-foreground mb-3 flex items-center justify-center gap-2"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ delay: 0.7 }}

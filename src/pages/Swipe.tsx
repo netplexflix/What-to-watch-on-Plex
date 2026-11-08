@@ -298,7 +298,9 @@ function scoreItem(item: any, filters: any, boosted: boolean = false): number {
 const Swipe = () => {
   const navigate = useNavigate();
   const { code } = useParams<{ code: string }>();
-  const localSession = getLocalSession();
+  // Read once: getLocalSession() parses a new object on every call, and as an effect
+  // dependency that would re-run the effects below on every render.
+  const [localSession] = useState(getLocalSession);
   const haptics = useHaptics();
   
   const [items, setItems] = useState<PlexItem[]>([]);
@@ -987,14 +989,18 @@ const Swipe = () => {
     };
 
     initSession();
+  }, [code, navigate, checkAllQuestionsCompleted, localSession, loadMediaItems, navigateToResults]);
 
+  // Leave the session's live updates only when leaving the page. Kept out of the init effect
+  // above, whose cleanup would also run whenever one of its dependencies changed.
+  useEffect(() => {
     return () => {
       wsClient.unsubscribe();
       if (timerIntervalRef.current) {
         clearInterval(timerIntervalRef.current);
       }
     };
-  }, [code, navigate, checkAllQuestionsCompleted, localSession, loadMediaItems, navigateToResults]);
+  }, []);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -1015,26 +1021,8 @@ const Swipe = () => {
       }
     });
 
-    const unsubVoteAdded = wsClient.on('vote_added', async () => {
-      if (hasNavigatedRef.current || matchFound) return;
-      
-      // For timed sessions and match target sessions, don't check for immediate match on every vote
-      if (isTimedSessionRef.current || isMatchTargetSessionRef.current) return;
-      
-      const sid = sessionIdRef.current;
-      if (!sid) return;
-      
-      try {
-        const { data: sessionData } = await sessionsApi.getById(sid);
-        if (sessionData?.session?.winner_item_key || sessionData?.session?.status === 'completed') {
-          console.log("[Swipe] Match detected via vote_added event");
-          setWinnerItemKey(sessionData.session.winner_item_key);
-          navigateToResults();
-        }
-      } catch (err) {
-        console.error("[Swipe] Error checking session after vote:", err);
-      }
-    });
+    // No vote_added listener: a match is announced by the session_updated broadcast below,
+    // so re-reading the session on every vote by anyone would only add load.
 
     // Listen for match target updates - this fires for ALL participants in the session
     const unsubMatchTargetUpdate = wsClient.on('match_target_update', (data) => {
@@ -1061,7 +1049,7 @@ const Swipe = () => {
           console.log("[Swipe] Voting status received, navigating to timed results");
           hasNavigatedRef.current = true;
           haptics.success();
-          toast.success(isMatchTargetSessionRef.current ? "Match target reached! Time to vote!" : "Time to vote!");
+          // toast.success(isMatchTargetSessionRef.current ? "Match target reached! Time to vote!" : "Time to vote!"); // disabled for now. too much noise imo
           navigate(`/timed-results/${code}`);
           return;
         }
@@ -1092,34 +1080,46 @@ const Swipe = () => {
         return;
       }
       
-      if (data.status === 'questions') {
+      // The host restarted the session (the host's own page navigates itself)
+      if (data.status === 'questions' && !hasNavigatedRef.current) {
+        hasNavigatedRef.current = true;
         navigate(`/questions/${code}`);
       }
     });
 
     return () => {
       unsubParticipantUpdated();
-      unsubVoteAdded();
       unsubMatchTargetUpdate();
       unsubSessionUpdated();
     };
-  }, [sessionId, waitingForQuestions, matchFound, code, navigate, checkAllQuestionsCompleted, loadMediaItems, navigateToResults, haptics]);
+  }, [sessionId, waitingForQuestions, code, navigate, checkAllQuestionsCompleted, loadMediaItems, navigateToResults, haptics]);
 
-  // Periodically check for match (backup mechanism) - only for classic sessions
+  // Periodically re-check the session status - the backup for every session_updated
+  // transition handled above, in case the WebSocket event never arrives.
   useEffect(() => {
     if (!sessionId || loading || waitingForQuestions || matchFound || hasNavigatedRef.current) return;
-    
-    // Skip periodic match check for purely timed sessions. A timed+target session still
-    // needs this as a backup for the "status became voting" transition.
-    if (isTimedSessionRef.current && !isMatchTargetSessionRef.current) return;
+
+    // Purely timed sessions end on the local timer, so they only need this while the deck is
+    // empty: "No Media Found" is the one screen the host can restart from.
+    if (isTimedSessionRef.current && !isMatchTargetSessionRef.current && items.length > 0) return;
 
     const checkForMatch = async () => {
       if (hasNavigatedRef.current) return;
-      
+
       try {
         const { data: sessionData } = await sessionsApi.getById(sessionId);
-        if (!sessionData?.session) return;
-        
+        if (!sessionData?.session || hasNavigatedRef.current) return;
+
+        // The host restarted the session to adjust preferences
+        if (sessionData.session.status === 'questions') {
+          console.log("[Swipe] Restart detected via periodic check");
+          hasNavigatedRef.current = true;
+          navigate(`/questions/${code}`);
+          return;
+        }
+
+        if (isTimedSessionRef.current && !isMatchTargetSessionRef.current) return;
+
         // For match target sessions, check if status changed to voting
         if (isMatchTargetSessionRef.current) {
           if (sessionData.session.status === 'voting') {
@@ -1127,7 +1127,7 @@ const Swipe = () => {
             if (!hasNavigatedRef.current) {
               hasNavigatedRef.current = true;
               haptics.success();
-              toast.success("Match target reached! Time to vote!");
+              // toast.success("Match target reached! Time to vote!"); // disabled for now. too much noise imo
               navigate(`/timed-results/${code}`);
             }
             return;
@@ -1142,6 +1142,14 @@ const Swipe = () => {
             setWinnerItemKey(sessionData.session.winner_item_key);
           }
           navigateToResults();
+          return;
+        }
+
+        // Everyone swiped through the deck without a match - the last one to finish set this,
+        // and anyone who finished earlier is still on "All Done!".
+        if (sessionData.session.status === 'no_match') {
+          console.log("[Swipe] No match detected via periodic check");
+          navigateToResults();
         }
       } catch (err) {
         // Silently ignore errors in periodic check
@@ -1152,7 +1160,7 @@ const Swipe = () => {
     const intervalId = setInterval(checkForMatch, 2000);
 
     return () => clearInterval(intervalId);
-  }, [sessionId, loading, waitingForQuestions, matchFound, navigateToResults, navigate, code, haptics]);
+  }, [sessionId, loading, waitingForQuestions, matchFound, items.length, navigateToResults, navigate, code, haptics]);
 
   // Periodic match count + status sync for match target sessions (backup for missed
   // WebSocket events). This is the safety net that gets a participant who has finished
@@ -1184,7 +1192,7 @@ const Swipe = () => {
           console.log("[Swipe] Voting status detected via periodic sync");
           hasNavigatedRef.current = true;
           haptics.success();
-          toast.success("Match target reached! Time to vote!");
+          // toast.success("Match target reached! Time to vote!"); // disabled for now. too much noise imo
           navigate(`/timed-results/${code}`);
         }
       } catch (err) {
@@ -1251,7 +1259,7 @@ const Swipe = () => {
           if (data.matchTargetReached) {
             console.log("[Swipe] Match target reached via vote response!");
             haptics.success();
-            toast.success("Match target reached! Time to vote!");
+            // toast.success("Match target reached! Time to vote!"); // disabled for now. too much noise imo
             if (!hasNavigatedRef.current) {
               hasNavigatedRef.current = true;
               navigate(`/timed-results/${code}`);
@@ -1385,16 +1393,21 @@ const Swipe = () => {
     
     try {
       itemsLoadedRef.current = false;
-      
-      await sessionsApi.update(sid, { status: "questions" });
-      
+      // This page navigates itself below; keep its own status poll from racing it there.
+      hasNavigatedRef.current = true;
+
+      // Clear everyone's answers before the status flips. The other participants follow the
+      // status to the questions page, and must not find their old answers still marked done.
       for (const p of participantsRef.current) {
         await sessionsApi.updateParticipant(p.id, { questions_completed: false });
       }
-      
+
+      await sessionsApi.update(sid, { status: "questions" });
+
       navigate(`/questions/${code}`);
-      toast.success("Session restarted - adjust your preferences!");
+      // toast.success("Session restarted - adjust your preferences!"); // disabled for now. too much noise imo
     } catch (error) {
+      hasNavigatedRef.current = false;
       console.error("[Swipe] Error restarting session:", error);
       haptics.error();
       toast.error("Failed to restart session");

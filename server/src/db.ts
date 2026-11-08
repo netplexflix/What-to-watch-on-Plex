@@ -167,6 +167,18 @@ function runMigrations(db: DatabaseType) {
     db.exec('ALTER TABLE sessions ADD COLUMN watchlist_keys TEXT DEFAULT NULL');
   }
 
+  // JSON array of the item keys tied in the final vote, and when the host started the tie-break
+  // roulette. Kept on the session so a participant who missed those broadcasts can catch up.
+  if (!sessionColumnNames.includes('tied_items')) {
+    console.log('[DB Migration] Adding tied_items column to sessions');
+    db.exec('ALTER TABLE sessions ADD COLUMN tied_items TEXT DEFAULT NULL');
+  }
+
+  if (!sessionColumnNames.includes('roulette_started_at')) {
+    console.log('[DB Migration] Adding roulette_started_at column to sessions');
+    db.exec('ALTER TABLE sessions ADD COLUMN roulette_started_at TEXT DEFAULT NULL');
+  }
+
   // Create final_votes table if not exists
   db.exec(`
     CREATE TABLE IF NOT EXISTS final_votes (

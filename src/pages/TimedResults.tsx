@@ -1,8 +1,8 @@
 // File: src/pages/TimedResults.tsx
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { motion } from "framer-motion";
-import { Loader2, Check, Users, Home, CircleSlash, SkipForward } from "lucide-react";
+import { AnimatePresence, motion } from "framer-motion";
+import { Loader2, Check, Users, Home, CircleSlash, SkipForward, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -59,6 +59,20 @@ const getVotingItems = (
   topLiked: { item: PlexItem; likeCount: number }[]
 ): PlexItem[] =>
   matches.length > 0 ? matches : topLiked.slice(0, TOP_LIKED_LIMIT).map((t) => t.item);
+
+// session.tied_items is a JSON array of item keys, or null when the final vote had no tie.
+const parseTiedItems = (value: unknown): string[] => {
+  if (typeof value !== "string") return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+// How often the voting screen re-reads the session while it waits on other people
+const RESYNC_INTERVAL_MS = 3000;
 
 const TimedResults = () => {
   const navigate = useNavigate();
@@ -153,6 +167,19 @@ const TimedResults = () => {
     }
   }, [findItemByKey]);
 
+  // Shows the result the server already stored, for a client that missed voting_complete (a reload,
+  // a phone that slept through it, a dropped socket). A tie nobody has spun yet still goes to the
+  // roulette: if the host skipped it, everyone else would wait on "Waiting for host" forever.
+  const showStoredResult = useCallback((session: any) => {
+    if (session?.status !== 'completed' || !session.winner_item_key) return;
+    const tiedItems = parseTiedItems(session.tied_items);
+    handleVotingResult({
+      winner: session.winner_item_key,
+      wasTie: tiedItems.length > 1 && !session.roulette_started_at,
+      tiedItems,
+    });
+  }, [handleVotingResult]);
+
   useEffect(() => {
     if (initStartedRef.current) return;
     
@@ -230,22 +257,17 @@ const TimedResults = () => {
           console.error('[TimedResults] Error fetching media:', mediaError);
         }
 
-        if (session.winner_item_key && session.status === 'completed') {
-          const winner = mediaMapRef.current.get(session.winner_item_key);
-          if (winner) {
-            hasHandledResultRef.current = true;
-            setFinalWinner(transformToPlexItem(winner));
-            setPageState('winner');
-            return;
-          }
-        }
-
+        // Subscribed before the completed check below: a stored tie can land on the roulette,
+        // which still needs the host's roulette_started broadcast.
         try {
           await wsClient.connect();
           await wsClient.subscribe(session.id, currentLocalSession.participantId);
         } catch (wsError) {
           console.warn('[TimedResults] WebSocket connection failed:', wsError);
         }
+
+        showStoredResult(session);
+        if (hasHandledResultRef.current) return;
 
         const loadedMatches: PlexItem[] = [];
         const loadedTopLiked: { item: PlexItem; likeCount: number }[] = [];
@@ -320,15 +342,8 @@ const TimedResults = () => {
             if (votesResult.data.allVoted && !hasHandledResultRef.current) {
               try {
                 const updatedSessionResult = await sessionsApi.getById(session.id);
-                if (updatedSessionResult.data?.session?.winner_item_key) {
-                  const winner = mediaMapRef.current.get(updatedSessionResult.data.session.winner_item_key);
-                  if (winner) {
-                    hasHandledResultRef.current = true;
-                    setFinalWinner(transformToPlexItem(winner));
-                    setPageState('winner');
-                    return;
-                  }
-                }
+                showStoredResult(updatedSessionResult.data?.session);
+                if (hasHandledResultRef.current) return;
               } catch (updateError) {
                 console.error('[TimedResults] Error fetching updated session:', updateError);
               }
@@ -352,7 +367,7 @@ const TimedResults = () => {
     };
 
     init();
-  }, [code, navigate, haptics]);
+  }, [code, navigate, haptics, showStoredResult]);
 
   useEffect(() => {
     if (!sessionId || !localSession) return;
@@ -390,6 +405,57 @@ const TimedResults = () => {
     };
   }, [sessionId, localSession, handleVotingResult, findItemByKey]);
 
+  // Backup for the WebSocket events above: while this screen waits on other people, re-read the
+  // vote count and the session, so a missed final_vote_cast / voting_complete can't strand it.
+  // Every dependency is stable, so the interval survives re-renders.
+  useEffect(() => {
+    if (!sessionId || (pageState !== 'voting' && pageState !== 'waiting')) return;
+
+    const resync = async () => {
+      if (hasHandledResultRef.current) return;
+
+      const [{ data: votesData }, { data: sessionData }] = await Promise.all([
+        sessionsApi.getFinalVotes(sessionId),
+        sessionsApi.getById(sessionId),
+      ]);
+      if (hasHandledResultRef.current) return;
+
+      if (votesData) {
+        setVotingStatus({ voted: votesData.votedCount || 0, total: votesData.totalCount || 0 });
+      }
+      showStoredResult(sessionData?.session);
+    };
+
+    const intervalId = setInterval(resync, RESYNC_INTERVAL_MS);
+    return () => clearInterval(intervalId);
+  }, [sessionId, pageState, showStoredResult]);
+
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const scrollContentRef = useRef<HTMLDivElement>(null);
+  const [canScrollDown, setCanScrollDown] = useState(false);
+
+  // Scroll hint: shown while posters are still hidden below the pinned vote controls.
+  useEffect(() => {
+    const area = scrollAreaRef.current;
+    const content = scrollContentRef.current;
+    if (!area || !content) return;
+
+    const update = () => {
+      // Layout height rather than scrollHeight: the posters' entrance transform inflates scrollHeight.
+      const hiddenBelow = content.offsetHeight - area.scrollTop - area.clientHeight;
+      setCanScrollDown(hiddenBelow > 8);
+    };
+    update();
+    area.addEventListener("scroll", update, { passive: true });
+    const observer = new ResizeObserver(update);
+    observer.observe(area);
+    observer.observe(content);
+    return () => {
+      area.removeEventListener("scroll", update);
+      observer.disconnect();
+    };
+  }, [pageState, matches.length, topLiked.length]);
+
   const handleSelectItem = (itemKey: string) => {
     if (hasVoted) return;
     setSelectedItem(itemKey);
@@ -414,7 +480,7 @@ const TimedResults = () => {
       if (error) throw new Error(error);
 
       haptics.success();
-      toast.success("Vote cast!");
+      // toast.success("Vote cast!"); // disabled for now. too much noise imo
 
       if (data?.allVoted && data.winner && !hasHandledResultRef.current) {
         handleVotingResult({
@@ -553,11 +619,12 @@ const TimedResults = () => {
 
   if (pageState === 'winner' && finalWinner) {
     return (
-      <div className="min-h-screen flex flex-col relative overflow-hidden">
+      <div className="min-h-dvh flex flex-col relative overflow-hidden">
         <div className="fixed inset-0 bg-background">
           <div className="absolute inset-0 bg-gradient-to-br from-primary/5 via-transparent to-accent/5" />
         </div>
-        <div className="flex-1 flex flex-col items-center justify-center px-6 py-8 relative z-10">
+        {/* MatchCelebration pads itself and sizes its poster to the remaining height */}
+        <div className="flex-1 flex flex-col relative z-10">
           <MatchCelebration item={finalWinner} ratingDisplay={ratingDisplay}>
             <div className="flex flex-col gap-3 w-full">
               {enablePlexButton && (
@@ -610,105 +677,136 @@ const TimedResults = () => {
   }
 
   return (
-    <div className="min-h-screen flex flex-col relative overflow-hidden">
+    <div className="h-dvh flex flex-col relative overflow-hidden">
       <div className="fixed inset-0 bg-background">
         <div className="absolute inset-0 bg-gradient-to-br from-primary/5 via-transparent to-accent/5" />
       </div>
 
-      <div className="flex-1 flex flex-col px-6 py-6 relative z-10">
-        <div className="flex justify-center mb-4">
-          <Logo size="sm" />
-        </div>
-
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="text-center mb-4"
-        >
-          <h1 className="text-xl font-bold text-foreground mb-1">
-            {isMatchMode ? endReasonHeading : "Session Complete"}
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            {isMatchMode 
-              ? `${matches.length} match${matches.length !== 1 ? 'es' : ''} found! Vote for your favorite.`
-              : "No perfect matches, but here are the most liked items."}
-          </p>
-          <p className="text-xs text-muted-foreground/70 mt-1">
-            Double tap for info
-          </p>
-        </motion.div>
-
-        <div className="glass-card rounded-xl p-3 mb-4 flex items-center justify-center gap-4">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Users size={16} />
-            <span>{votingStatus.voted} / {votingStatus.total} voted</span>
-          </div>
-          {hasVoted && (
-            <div className="flex items-center gap-1 text-sm text-primary">
-              <Check size={16} />
-              <span>You voted</span>
-            </div>
-          )}
-        </div>
-
-        <div className="grid grid-cols-2 gap-3 mb-4 max-w-sm mx-auto w-full flex-1 content-start">
-          {itemsToShow.map((item, index) => (
-            <FlippableCard
-              key={item.ratingKey}
-              item={item}
-              isSelected={selectedItem === item.ratingKey}
-              isDisabled={hasVoted}
-              onSelect={handleSelectItem}
-              animationDelay={index * 0.05}
-              ratingDisplay={ratingDisplay}
-              enableTrailers={enableTrailers}
-            />
-          ))}
-        </div>
-
-        {/* Blank vote - selected like a poster, confirmed with the same Cast Vote button */}
-        <button
-          type="button"
-          onClick={() => {
-            if (hasVoted) return;
-            haptics.selection();
-            handleSelectItem(ABSTAIN_ITEM_KEY);
-          }}
-          disabled={hasVoted}
+      <div className="relative z-10 flex items-center justify-between px-6 pt-4">
+        <Logo size="sm" />
+        <div
           className={cn(
-            "w-full max-w-sm mx-auto mb-4 flex items-center justify-center gap-2 rounded-xl px-4 py-3",
-            "glass-card text-sm font-medium text-muted-foreground transition-all duration-200",
-            selectedItem === ABSTAIN_ITEM_KEY
-              ? "ring-4 ring-primary ring-offset-2 ring-offset-background text-foreground"
-              : "hover:text-foreground",
-            hasVoted && selectedItem !== ABSTAIN_ITEM_KEY && "opacity-40"
+            "flex items-center gap-1.5 text-sm",
+            hasVoted ? "text-primary" : "text-muted-foreground"
           )}
+          title={hasVoted ? "You voted" : undefined}
         >
-          {selectedItem === ABSTAIN_ITEM_KEY ? <Check size={16} /> : <CircleSlash size={16} />}
-          No preference
-        </button>
+          {hasVoted ? <Check size={16} /> : <Users size={16} />}
+          <span>{votingStatus.voted} / {votingStatus.total} voted</span>
+        </div>
+      </div>
 
-        <div className="mt-auto">
+      <div className="relative z-10 flex-1 min-h-0">
+        {/* Only this middle part scrolls; the edges fade so further rows read as scrollable */}
+        <div
+          ref={scrollAreaRef}
+          className="h-full overflow-y-auto overscroll-contain px-6 [mask-image:linear-gradient(to_bottom,transparent,black_8px,black_calc(100%_-_24px),transparent)]"
+        >
+          <div ref={scrollContentRef}>
+            {/* -mx-2 widens the line so subtitle + hint fit side by side on most phones */}
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="text-center pt-2 mb-4 -mx-2"
+            >
+              <h1 className="text-xl font-bold text-foreground mb-1">
+                {isMatchMode ? endReasonHeading : "Session Complete"}
+              </h1>
+              <p className="text-xs text-muted-foreground">
+                {isMatchMode
+                  ? `${matches.length} match${matches.length !== 1 ? 'es' : ''} found! Vote for your favorite.`
+                  : "No perfect matches, but here are the most liked items."}{" "}
+                {/* Wraps as a whole onto its own line when the row is too narrow */}
+                <span className="whitespace-nowrap text-muted-foreground/70">Double tap for info</span>
+              </p>
+            </motion.div>
+
+            <div className="grid grid-cols-2 gap-3 pb-6 max-w-sm mx-auto w-full">
+              {itemsToShow.map((item, index) => (
+                <FlippableCard
+                  key={item.ratingKey}
+                  item={item}
+                  isSelected={selectedItem === item.ratingKey}
+                  isDisabled={hasVoted}
+                  onSelect={handleSelectItem}
+                  animationDelay={index * 0.05}
+                  ratingDisplay={ratingDisplay}
+                  enableTrailers={enableTrailers}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Outside the masked scroller, which would fade it out; never intercepts poster taps */}
+        <AnimatePresence>
+          {canScrollDown && (
+            <motion.div
+              key="scroll-hint"
+              data-scroll-hint
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center"
+              aria-hidden="true"
+            >
+              <motion.div
+                animate={{ y: [0, 4, 0] }}
+                transition={{ duration: 1.6, repeat: Infinity, ease: "easeInOut" }}
+                className="rounded-full p-1 bg-primary text-primary-foreground shadow-lg"
+              >
+                <ChevronDown size={18} />
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+      {/* Pinned vote controls - always on screen however many rows of posters there are */}
+      <div className="relative z-10 px-6 pt-3 pb-4">
+        <div className="max-w-sm mx-auto w-full space-y-3">
+          {/* Blank vote - selected like a poster, confirmed with the same Cast Vote button */}
+          <button
+            type="button"
+            onClick={() => {
+              if (hasVoted) return;
+              haptics.selection();
+              handleSelectItem(ABSTAIN_ITEM_KEY);
+            }}
+            disabled={hasVoted}
+            className={cn(
+              "w-full flex items-center justify-center gap-2 rounded-xl px-4 py-2.5",
+              "glass-card text-sm font-medium text-muted-foreground transition-all duration-200",
+              selectedItem === ABSTAIN_ITEM_KEY
+                ? "ring-4 ring-primary ring-offset-2 ring-offset-background text-foreground"
+                : "hover:text-foreground",
+              hasVoted && selectedItem !== ABSTAIN_ITEM_KEY && "opacity-40"
+            )}
+          >
+            {selectedItem === ABSTAIN_ITEM_KEY ? <Check size={16} /> : <CircleSlash size={16} />}
+            No preference
+          </button>
+
           {pageState === 'voting' && !hasVoted ? (
             <Button
               onClick={handleCastVote}
               disabled={!selectedItem}
-              className="w-full max-w-sm mx-auto h-12 text-base font-semibold bg-primary hover:bg-primary/90 text-primary-foreground flex"
+              className="w-full h-12 text-base font-semibold bg-primary hover:bg-primary/90 text-primary-foreground flex"
             >
               Cast Vote
             </Button>
           ) : (
-            <div className="text-center py-4">
-              <Loader2 className="animate-spin text-primary mx-auto mb-2" size={24} />
-              <p className="text-sm text-muted-foreground">
+            <div className="text-center">
+              <div className="flex items-center justify-center gap-2 py-1 text-sm text-muted-foreground">
+                <Loader2 className="animate-spin text-primary" size={16} />
                 Waiting for others to vote...
-              </p>
+              </div>
               {isHost && (
                 <Button
                   onClick={handleContinueClick}
                   disabled={isFinishing}
                   variant="outline"
-                  className="w-full max-w-sm mx-auto mt-4 h-11 font-semibold border-secondary text-foreground hover:bg-secondary flex"
+                  className="w-full mt-2 h-11 font-semibold border-secondary text-foreground hover:bg-secondary flex"
                 >
                   {isFinishing ? (
                     <>
