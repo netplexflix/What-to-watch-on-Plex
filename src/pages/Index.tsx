@@ -172,7 +172,8 @@ const Index = () => {
       <Button
         variant="ghost"
         size="icon"
-        onClick={() => navigate("/admin")}
+        // Full page load so an authenticating reverse proxy can intercept /admin
+        onClick={() => window.location.assign("/admin")}
         className="text-muted-foreground hover:text-foreground"
       >
         <Settings size={20} />

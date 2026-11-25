@@ -17,3 +17,5 @@ services:
       - PGID=1000  # Set to your user's GID (run: id -g)
       # - UMASK=002  # Optional: file permission mask
       # - CORS_ORIGINS=http://192.168.1.100:3000,https://wtw.yourdomain.com  # Required if accessing via LAN IP, hostname, or reverse proxy (not needed for localhost). Comma-separated list.
+      # - ADMIN_PROXY_AUTH_HEADER=X-WTW-Admin-Auth  # Optional: skip the admin password behind an authenticating reverse proxy (see README)
+      # - ADMIN_PROXY_AUTH_SECRET=change-me-to-a-long-random-value  # Optional: at least 16 characters, sent by the proxy in the header above
