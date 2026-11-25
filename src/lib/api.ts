@@ -196,6 +196,9 @@ export const adminApi = {
   checkPasswordStatus: () =>
     fetchApi<{ isSet: boolean }>('/admin/check-password-status', { method: 'POST' }),
 
+  proxyLogin: () =>
+    fetchApi<{ valid: boolean; token?: string }>('/admin/proxy-login', { method: 'POST' }),
+
   setPassword: (password: string) =>
     fetchApi<{ success: boolean; token?: string }>('/admin/set-password', {
       method: 'POST',

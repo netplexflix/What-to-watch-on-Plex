@@ -38,6 +38,42 @@ setInterval(() => {
   }
 }, 60 * 60 * 1000); // Every hour
 
+// ============ TRUSTED REVERSE PROXY AUTH (optional) ============
+// When the admin panel sits behind an authenticating reverse proxy (Pomerium,
+// Authelia, oauth2-proxy, ...), the proxy can add a secret header to requests it
+// has already authenticated. If that header carries the configured secret, the
+// admin password prompt is skipped. Off unless both variables are set.
+
+const PROXY_AUTH_HEADER = (process.env.ADMIN_PROXY_AUTH_HEADER || '').trim().toLowerCase();
+const PROXY_AUTH_SECRET = (process.env.ADMIN_PROXY_AUTH_SECRET || '').trim();
+const PROXY_AUTH_MIN_SECRET_LENGTH = 16;
+
+const PROXY_AUTH_SECRET_DIGEST = crypto.createHash('sha256').update(PROXY_AUTH_SECRET).digest();
+
+export function isProxyAuthEnabled(): boolean {
+  return (
+    /^[a-z0-9-]+$/.test(PROXY_AUTH_HEADER) &&
+    PROXY_AUTH_SECRET.length >= PROXY_AUTH_MIN_SECRET_LENGTH
+  );
+}
+
+if ((PROXY_AUTH_HEADER || PROXY_AUTH_SECRET) && !isProxyAuthEnabled()) {
+  console.warn(
+    `[Auth] Proxy auth is disabled: set ADMIN_PROXY_AUTH_HEADER to a valid header name and ADMIN_PROXY_AUTH_SECRET to at least ${PROXY_AUTH_MIN_SECRET_LENGTH} characters.`
+  );
+} else if (isProxyAuthEnabled()) {
+  console.log(`[Auth] Trusted proxy auth enabled via header "${PROXY_AUTH_HEADER}"`);
+}
+
+export function isProxyAuthenticated(req: Request): boolean {
+  if (!isProxyAuthEnabled()) return false;
+  const value = req.headers[PROXY_AUTH_HEADER];
+  if (typeof value !== 'string' || value.length === 0) return false;
+  // Compare digests so the comparison is constant-time regardless of length.
+  const given = crypto.createHash('sha256').update(value).digest();
+  return crypto.timingSafeEqual(given, PROXY_AUTH_SECRET_DIGEST);
+}
+
 // ============ PASSWORD HASHING (scrypt) ============
 
 export function hashPasswordServer(password: string): string {

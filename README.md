@@ -92,6 +92,38 @@ If you access this app through a custom domain or reverse proxy (e.g. wtw.mydoma
 Only requests from allowed domains will be accepted.
 Equivalent to the `CORS_ORIGINS` environment variable, but managed at runtime without restarting the container. Setting either one is enough.
 
+### Admin login through a reverse proxy (optional)
+If your reverse proxy already handles login (Pomerium, Authelia, Authentik, oauth2-proxy, ...), you can skip the admin password prompt.<br>
+Set both environment variables:
+- `ADMIN_PROXY_AUTH_HEADER`: name of a header your proxy adds, e.g. `X-WTW-Admin-Auth`
+- `ADMIN_PROXY_AUTH_SECRET`: a random value of at least 16 characters that your proxy puts in that header
+
+Then configure your proxy to require login for `/admin` and `/api/admin/proxy-login`, and to add the header with the secret on those authenticated requests only. When the admin page opens, it calls `/api/admin/proxy-login`; if the header is valid it receives an admin session and skips the password prompt. Every other admin endpoint still requires that session, so the rest of the app can stay public.
+> [!WARNING]
+> Anyone who can send the header with the secret gets admin access. Keep the secret private, make sure your proxy overwrites the header rather than passing a client-supplied value, and don't expose the container port directly.
+
+Pomerium example (route order matters; keep the public route last):
+```yaml
+  - from: https://wtw.yourdomain.com
+    regex: "(?i)^/(admin|api/admin/proxy-login)/?$"
+    to: http://wtwp:3000
+    set_request_headers:
+      X-WTW-Admin-Auth: your-long-random-secret
+    policy:
+      - allow:
+          or:
+            - email:
+                is: you@example.com
+  # Public route for everything else; drop any client-supplied header as defense in depth
+  - from: https://wtw.yourdomain.com
+    to: http://wtwp:3000
+    allow_public_unauthenticated_access: true
+    allow_websockets: true
+    remove_request_headers:
+      - X-WTW-Admin-Auth
+```
+With proxy auth on, setting the admin password also requires the proxy header, so nobody else can claim it. An existing password still works as a fallback login.
+
 ### Optional Settings
 
 - **Auto Refresh:** Automatically refresh your cache at 3AM.

@@ -13,6 +13,8 @@ import {
   verifyPasswordServer,
   verifyLegacyPassword,
   createAdminSession,
+  isProxyAuthenticated,
+  isProxyAuthEnabled,
 } from '../middleware/auth.js';
 import { encryptToken, decryptToken } from '../services/encryption.js';
 import { loadCorsOrigins } from '../index.js';
@@ -21,6 +23,8 @@ import { invalidateServerIdCache } from './plex.js';
 const router = Router();
 
 const authRateLimiter = createRateLimiter(15 * 60 * 1000, 20); // 15 min window, 20 max
+// Separate bucket so failed password attempts can't lock out proxy logins (behind a proxy all clients share one IP)
+const proxyLoginRateLimiter = createRateLimiter(15 * 60 * 1000, 100);
 
 // Configure multer for logo uploads
 const DATA_PATH = process.env.DATA_PATH || './data';
@@ -132,6 +136,22 @@ router.post('/check-password-status', (req, res) => {
   }
 });
 
+// Trusted reverse proxy login: issues an admin session when the request carries
+// the configured proxy auth header (see ADMIN_PROXY_AUTH_HEADER / _SECRET).
+router.post('/proxy-login', (req, res, next) => {
+  // Nothing to check (and no rate-limit quota spent) when proxy auth is off.
+  if (!isProxyAuthEnabled()) {
+    return res.json({ valid: false });
+  }
+  next();
+}, proxyLoginRateLimiter, (req, res) => {
+  if (!isProxyAuthenticated(req)) {
+    return res.json({ valid: false });
+  }
+  const token = createAdminSession();
+  res.json({ valid: true, token });
+});
+
 // Set admin password (accepts plaintext, hashes server-side with scrypt)
 router.post('/set-password', authRateLimiter, (req, res) => {
   try {
@@ -141,6 +161,12 @@ router.post('/set-password', authRateLimiter, (req, res) => {
     }
 
     const db = getDb();
+    // With proxy auth on, the admin may never set a password, so an unclaimed
+    // password must not be settable by whoever reaches this endpoint first.
+    if (isProxyAuthEnabled() && !isProxyAuthenticated(req)) {
+      return res.status(403).json({ error: 'Password setup requires proxy authentication' });
+    }
+
     const existing = db.prepare('SELECT value FROM app_config WHERE key = ?').get('admin_password') as { value: string } | undefined;
 
     if (existing) {
